@@ -248,17 +248,27 @@ export default function ProjectPage() {
     setError(null);
     setInfo(null);
     const trimmed = prompt.trim();
-    if (!trimmed) {
-      setError("Écris d'abord une consigne de montage (ce que tu veux obtenir).");
+    const videoCount = project?.videos?.length ?? 0;
+    const activeJobs =
+      project?.jobs?.some((j) => j.status === "pending" || j.status === "running") ?? false;
+
+    if (videoCount === 0) {
+      setError(
+        "Aucune vidéo dans ce projet. Étape 1 : Choisir des vidéos → Importer. Ensuite tu pourras lancer l'analyse.",
+      );
       return;
     }
-    if (!project?.videos.length) {
-      setError("Importe au moins une vidéo avant de lancer l'analyse.");
+    if (!trimmed) {
+      setError("Écris d'abord une consigne de montage dans la zone de texte ci-dessus.");
       return;
     }
 
     setGenerating(true);
     try {
+      // Clear stuck jobs so a fresh run can start
+      if (activeJobs) {
+        await fetch(`/api/projects/${id}/jobs`, { method: "DELETE" }).catch(() => undefined);
+      }
       await savePrompt();
       const res = await fetch(`/api/projects/${id}/generate`, {
         method: "POST",
@@ -267,7 +277,7 @@ export default function ProjectPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.error || "Génération impossible");
+        setError(data.error || `Génération impossible (${res.status})`);
         return;
       }
       setInfo(data.message || "Traitement lancé. Suis la progression ci-dessous.");
@@ -433,15 +443,22 @@ export default function ProjectPage() {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Décrivez le montage souhaité…"
         />
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" className="btn btn-ghost" onClick={() => void savePrompt()} disabled={savingPrompt || generating}>
-            {savingPrompt ? "Sauvegarde…" : "Sauvegarder la consigne"}
-          </button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-ghost"
+            onClick={() => void savePrompt()}
+            disabled={savingPrompt || generating}
+          >
+            {savingPrompt ? "Sauvegarde…" : "Sauvegarder la consigne"}
+          </button>
+          {/* Never use disabled= for this CTA — greyed buttons feel broken on mobile.
+              Validation happens inside startGenerate with a clear error message. */}
+          <button
+            type="button"
+            className="btn btn-primary min-h-12 min-w-[12rem] touch-manipulation"
             onClick={() => void startGenerate()}
-            disabled={project.videos.length === 0 || generating}
+            aria-busy={generating}
           >
             {generating
               ? "Lancement…"
@@ -450,19 +467,36 @@ export default function ProjectPage() {
                 : "Lancer analyse & génération"}
           </button>
         </div>
-        {!prompt.trim() && (
+        <p className="mt-2 text-xs text-[var(--muted)]">
+          {project.videos.length === 0
+            ? "Bouton actif, mais il faut d’abord importer au moins une vidéo (étape 1)."
+            : `${project.videos.length} vidéo(s) · ${
+                prompt.trim() ? "consigne OK" : "ajoute une consigne puis lance"
+              }`}
+        </p>
+        {!prompt.trim() && project.videos.length > 0 && (
           <p className="mt-2 text-xs text-[var(--muted)]">
-            Exemples de consignes efficaces : « Monte un reel dynamique de 30s, coupe les silences, accroche forte
-            sur le meilleur moment, termine avec un CTA. » · « Garde uniquement les temps forts émotionnels,
-            version storytelling 45s. »
-          </p>
-        )}
-        {prompt.trim().length > 0 && prompt.trim().length < 24 && (
-          <p className="mt-2 text-xs text-[var(--muted)]">
-            Astuce IA : précise durée, rythme (rapide/posé), ce qu&apos;il faut garder ou éviter.
+            Exemples : « Monte un reel dynamique de 30s, coupe les silences, accroche forte. »
           </p>
         )}
       </section>
+
+      {/* Sticky mobile CTA — always reachable */}
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--line)] bg-[var(--bg)]/95 p-3 backdrop-blur md:hidden">
+        <button
+          type="button"
+          className="btn btn-primary w-full min-h-12 touch-manipulation"
+          onClick={() => void startGenerate()}
+          aria-busy={generating}
+        >
+          {generating
+            ? "Lancement…"
+            : busy
+              ? "Relancer analyse & génération"
+              : "Lancer analyse & génération"}
+        </button>
+      </div>
+      <div className="h-20 md:hidden" aria-hidden />
 
       <section className="surface rounded-2xl p-6">
         <h2 className="font-display mb-3 text-lg font-semibold">3. Progression</h2>
