@@ -5,6 +5,8 @@ import { enqueueJob } from "@/lib/queue/jobs";
 import { kickQueue } from "@/lib/queue/inline";
 import { waitUntil } from "@vercel/functions";
 import { isVercelRuntime } from "@/lib/video/binaries";
+import { resolveTranscriptionDriverName } from "@/lib/providers/transcription";
+import { resolveMontageDriverName } from "@/lib/providers/montage";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -15,9 +17,6 @@ export const dynamic = "force-dynamic";
 /**
  * Start (or restart) the full AI pipeline:
  * import → analyze → transcribe → generate timeline.
- *
- * Generate is only enqueued once videos are ready, or left to the
- * transcription step so it never races ahead of analysis.
  */
 export async function POST(req: Request, ctx: Ctx) {
   try {
@@ -49,7 +48,9 @@ export async function POST(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "Importez au moins une vidéo" }, { status: 400 });
     }
 
-    // Cancel active jobs then rebuild the pipeline
+    const transcriptionDriver = resolveTranscriptionDriverName();
+    const montageDriver = resolveMontageDriverName();
+
     await prisma.processingJob.updateMany({
       where: { projectId: id, status: { in: ["pending", "running"] } },
       data: { status: "cancelled", finishedAt: new Date() },
@@ -57,6 +58,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
     let enqueued = 0;
     let needsUpstream = false;
+    let refreshingTranscripts = 0;
 
     for (const video of videos) {
       const transcript = await prisma.transcript.findFirst({ where: { videoId: video.id } });
@@ -74,11 +76,14 @@ export async function POST(req: Request, ctx: Ctx) {
         await enqueueJob({ projectId: id, type: "transcribe", payload: { videoId: video.id } });
         enqueued += 1;
         needsUpstream = true;
+      } else if (transcriptionDriver === "openai" && transcript.provider !== "openai") {
+        await enqueueJob({ projectId: id, type: "transcribe", payload: { videoId: video.id } });
+        enqueued += 1;
+        needsUpstream = true;
+        refreshingTranscripts += 1;
       }
     }
 
-    // Only queue generate now if every video is already analyzed + transcribed.
-    // Otherwise processTranscribeJob will enqueue generate when the chain finishes.
     if (!needsUpstream) {
       await enqueueJob({ projectId: id, type: "generate", payload: {} });
       enqueued += 1;
@@ -99,14 +104,22 @@ export async function POST(req: Request, ctx: Ctx) {
       void kickQueue(40);
     }
 
+    const aiLabel =
+      montageDriver === "openai" || transcriptionDriver === "openai"
+        ? "IA OpenAI"
+        : "mode démo";
+
     return NextResponse.json(
       {
         ok: true,
         enqueued,
         needsUpstream,
+        drivers: { transcription: transcriptionDriver, montage: montageDriver },
         message: needsUpstream
-          ? "Analyse lancée. La génération démarrera automatiquement ensuite."
-          : "Génération du montage lancée. Suis la progression ci-dessous.",
+          ? refreshingTranscripts > 0
+            ? `Transcription Whisper relancée (${refreshingTranscripts}), puis montage ${aiLabel}.`
+            : `Analyse lancée (${aiLabel}). La génération suivra automatiquement.`
+          : `Génération ${aiLabel} lancée. Suis la progression ci-dessous.`,
       },
       { status: 202 },
     );

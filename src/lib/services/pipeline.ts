@@ -300,10 +300,16 @@ export async function processGenerateJob(jobId: string, projectId: string) {
   });
   await updateJobProgress(jobId, 50);
 
+  // Demote previous primary variants
+  await prisma.variant.updateMany({
+    where: { projectId, isPrimary: true },
+    data: { isPrimary: false },
+  });
+
   const variant = await prisma.variant.create({
     data: {
       projectId,
-      name: "Version principale",
+      name: provider.name === "openai" ? "Version IA" : "Version principale",
       style: project.tone ?? "dynamique",
       isPrimary: true,
     },
@@ -347,7 +353,12 @@ export async function processGenerateJob(jobId: string, projectId: string) {
       name: "Montage principal",
       durationSec: cursor,
       version: 1,
-      snapshotJson: JSON.stringify({ segments: segmentData }),
+      snapshotJson: JSON.stringify({
+        segments: segmentData,
+        montageProvider: provider.name,
+        prompt: project.prompt,
+        editorialPlan: result.editorial.variants?.[0] ?? null,
+      }),
       tracks: {
         create: [
           { type: "video", name: "Vidéo", orderIndex: 0 },

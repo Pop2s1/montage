@@ -447,7 +447,14 @@ export default function ProjectPage() {
         </div>
         {!prompt.trim() && (
           <p className="mt-2 text-xs text-[var(--muted)]">
-            Exemple : « Monte un reel dynamique de 30s avec les meilleurs moments et une accroche forte. »
+            Exemples de consignes efficaces : « Monte un reel dynamique de 30s, coupe les silences, accroche forte
+            sur le meilleur moment, termine avec un CTA. » · « Garde uniquement les temps forts émotionnels,
+            version storytelling 45s. »
+          </p>
+        )}
+        {prompt.trim().length > 0 && prompt.trim().length < 24 && (
+          <p className="mt-2 text-xs text-[var(--muted)]">
+            Astuce IA : précise durée, rythme (rapide/posé), ce qu&apos;il faut garder ou éviter.
           </p>
         )}
       </section>

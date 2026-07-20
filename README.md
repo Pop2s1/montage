@@ -96,25 +96,25 @@ Voir [`.env.example`](.env.example).
 |----------|------|
 | `DATABASE_URL` | SQLite local ou Postgres |
 | `AUTH_SECRET` | Secret Auth.js (≥ 16 caractères) |
-| `TRANSCRIPTION_PROVIDER` | `demo` (faux transcript) ou `openai` (Whisper réel) |
-| `MONTAGE_PROVIDER` | `demo` (heuristiques) ou `openai` (choix de plans via GPT) |
-| `OPENAI_API_KEY` | Requis si providers = `openai` |
+| `TRANSCRIPTION_PROVIDER` | `auto` (défaut), `demo`, ou `openai` (Whisper) |
+| `MONTAGE_PROVIDER` | `auto` (défaut), `demo`, ou `openai` (choix de plans GPT) |
+| `OPENAI_API_KEY` | Active l'IA réelle dès qu'elle est définie (`auto`) |
+| `OPENAI_MONTAGE_MODEL` | Modèle chat (défaut `gpt-4o-mini`) |
 | `STORAGE_DRIVER` | `local` (S3 prévu) |
 | `MAX_UPLOAD_BYTES` | Limite d’upload |
 | `BLOB_READ_WRITE_TOKEN` | Requis sur Vercel pour vidéos &gt; 4 Mo |
 
 ### Mode IA réelle (Vercel)
 
-Sans `OPENAI_API_KEY`, l’app reste **fonctionnelle en mode démo** (analyse + montage heuristique). Pour un montage basé sur le contenu réel :
+1. Ajoute `OPENAI_API_KEY=sk-...`
+2. Laisse `TRANSCRIPTION_PROVIDER=auto` et `MONTAGE_PROVIDER=auto` (ou force `openai`)
+3. Redeploy
 
-1. Ajoute `OPENAI_API_KEY`
-2. `TRANSCRIPTION_PROVIDER=openai`
-3. `MONTAGE_PROVIDER=openai`
-4. Redeploy
+L'app comprend alors l'audio (Whisper), interprète ta consigne (rythme, silences, accroche, CTA) et sélectionne les plans. Sans clé, le **mode démo** reste fonctionnel (heuristiques).
 
 Le statut IA s’affiche sur la page projet (`/api/ai/status`).
 
-Les providers `demo` sont clairement isolés dans `src/lib/providers/**` et remplacables sans toucher au pipeline.
+Les providers sont isolés dans `src/lib/providers/**`.
 
 ## Scripts
 
