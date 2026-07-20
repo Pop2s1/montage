@@ -53,6 +53,7 @@ export default function ProjectPage() {
   const promptFocusedRef = useRef(false);
   const promptInitializedRef = useRef(false);
   const generatingRef = useRef(false);
+  const projectRef = useRef<ProjectPayload | null>(null);
 
   const load = useCallback(async () => {
     if (generatingRef.current) return;
@@ -64,9 +65,27 @@ export default function ProjectPage() {
       return;
     }
 
-    setProject(data.project);
+    const serverProject = data.project as ProjectPayload;
+    setProject((prev) => {
+      // Keep optimistic videos that the server has not echoed yet (Blob / DB lag)
+      if (!prev?.videos?.length) {
+        projectRef.current = serverProject;
+        return serverProject;
+      }
+      const serverIds = new Set((serverProject.videos ?? []).map((v) => v.id));
+      const missing = prev.videos.filter((v) => !serverIds.has(v.id));
+      const merged =
+        missing.length === 0
+          ? serverProject
+          : {
+              ...serverProject,
+              videos: [...(serverProject.videos ?? []), ...missing],
+            };
+      projectRef.current = merged;
+      return merged;
+    });
 
-    const serverPrompt = data.project.prompt ?? "";
+    const serverPrompt = serverProject.prompt ?? "";
     if (!promptInitializedRef.current) {
       promptInitializedRef.current = true;
       promptRef.current = serverPrompt;
@@ -187,6 +206,15 @@ export default function ProjectPage() {
           }
         : prev,
     );
+    projectRef.current = {
+      ...(projectRef.current ?? ({} as ProjectPayload)),
+      videos: [
+        ...data.videos,
+        ...((projectRef.current?.videos ?? []).filter(
+          (v) => !data.videos.some((n: { id: string }) => n.id === v.id),
+        )),
+      ],
+    } as ProjectPayload;
   }
 
   async function uploadViaBlob(file: File) {
@@ -229,15 +257,17 @@ export default function ProjectPage() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Vidéo uploadée mais non enregistrée dans le projet");
     if (data.video) {
-      setProject((prev) =>
-        prev
+      setProject((prev) => {
+        const next = prev
           ? {
               ...prev,
               videos: [data.video, ...prev.videos.filter((v) => v.id !== data.video.id)],
-              status: "pending",
+              status: "pending" as const,
             }
-          : prev,
-      );
+          : prev;
+        if (next) projectRef.current = next;
+        return next;
+      });
     }
   }
 
@@ -276,25 +306,68 @@ export default function ProjectPage() {
 
   async function startGenerate() {
     setError(null);
-    setInfo("Clic reçu — préparation…");
+    setInfo("Clic reçu — vérification des vidéos…");
 
     const trimmed = promptRef.current.trim();
-    const videoCount = project?.videos?.length ?? 0;
-    const activeJobs =
-      project?.jobs?.some((j) => j.status === "pending" || j.status === "running") ?? false;
-
-    if (videoCount === 0) {
-      setError(
-        "Aucune vidéo détectée dans le projet. Vérifie la liste (étape 1). Si tu vois tes vidéos, recharge la page.",
-      );
-      setInfo(null);
-      return;
-    }
     if (!trimmed) {
       setError("Écris une consigne de montage, puis relance.");
       setInfo(null);
       return;
     }
+
+    // Always re-read from the server — don't trust a possibly stale React closure
+    let freshVideos: ProjectPayload["videos"] = projectRef.current?.videos ?? project?.videos ?? [];
+    try {
+      const probe = await fetch(`/api/projects/${id}`, { cache: "no-store" });
+      const probeData = await probe.json();
+      if (probe.ok && probeData.project) {
+        const serverVideos = probeData.project.videos ?? [];
+        const localVideos = projectRef.current?.videos ?? project?.videos ?? [];
+        // Prefer the richer of the two lists (avoids false "no videos" on replication lag)
+        freshVideos = serverVideos.length >= localVideos.length ? serverVideos : localVideos;
+        const mergedProject = {
+          ...probeData.project,
+          videos: freshVideos,
+        } as ProjectPayload;
+        projectRef.current = mergedProject;
+        setProject(mergedProject);
+      }
+    } catch {
+      // keep local list
+    }
+
+    // One short retry if UI had videos but first probe was empty
+    if (freshVideos.length === 0) {
+      await new Promise((r) => setTimeout(r, 1200));
+      try {
+        const retry = await fetch(`/api/projects/${id}`, { cache: "no-store" });
+        const retryData = await retry.json();
+        if (retry.ok) {
+          freshVideos = retryData.project?.videos ?? [];
+          if (retryData.project) {
+            projectRef.current = retryData.project;
+            setProject(retryData.project);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const videoCount = freshVideos.length;
+    const activeJobs =
+      projectRef.current?.jobs?.some((j) => j.status === "pending" || j.status === "running") ??
+      false;
+
+    if (videoCount === 0) {
+      setError(
+        "Le serveur ne trouve aucune vidéo pour ce projet (même si l'écran en montrait). Réimporte une vidéo, attends 2 secondes, puis relance.",
+      );
+      setInfo(null);
+      return;
+    }
+
+    setInfo(`Clic OK — ${videoCount} vidéo(s) trouvée(s). Lancement…`);
 
     generatingRef.current = true;
     setGenerating(true);
@@ -306,7 +379,7 @@ export default function ProjectPage() {
       setInfo("Sauvegarde de la consigne…");
       await savePrompt(trimmed);
 
-      setInfo("Lancement analyse & génération (jusqu'à ~1 min)…");
+      setInfo(`Lancement analyse & génération sur ${videoCount} vidéo(s)…`);
       const res = await fetch(`/api/projects/${id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

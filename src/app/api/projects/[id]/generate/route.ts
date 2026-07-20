@@ -45,7 +45,14 @@ export async function POST(req: Request, ctx: Ctx) {
 
     const videos = await prisma.videoAsset.findMany({ where: { projectId: id } });
     if (videos.length === 0) {
-      return NextResponse.json({ error: "Importez au moins une vidéo" }, { status: 400 });
+      return NextResponse.json(
+        {
+          error:
+            "Aucune vidéo en base pour ce projet. Réimporte tes fichiers (étape 1 → Importer), attends qu'ils apparaissent dans la liste, puis relance.",
+          videoCount: 0,
+        },
+        { status: 400 },
+      );
     }
 
     const transcriptionDriver = resolveTranscriptionDriverName();
