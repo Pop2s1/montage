@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { formatBytes, formatDuration, statusLabel } from "@/lib/utils/helpers";
@@ -48,15 +48,34 @@ export default function ProjectPage() {
   const [generating, setGenerating] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
 
+  const promptRef = useRef("");
+  const promptDirtyRef = useRef(false);
+  const promptFocusedRef = useRef(false);
+  const promptInitializedRef = useRef(false);
+  const generatingRef = useRef(false);
+
   const load = useCallback(async () => {
+    if (generatingRef.current) return;
+
     const res = await fetch(`/api/projects/${id}`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       setError(data.error || "Erreur de chargement");
       return;
     }
+
     setProject(data.project);
-    setPrompt(data.project.prompt ?? "");
+
+    const serverPrompt = data.project.prompt ?? "";
+    if (!promptInitializedRef.current) {
+      promptInitializedRef.current = true;
+      promptRef.current = serverPrompt;
+      setPrompt(serverPrompt);
+      promptDirtyRef.current = false;
+    } else if (!promptDirtyRef.current && !promptFocusedRef.current) {
+      promptRef.current = serverPrompt;
+      setPrompt(serverPrompt);
+    }
   }, [id]);
 
   useEffect(() => {
@@ -65,7 +84,7 @@ export default function ProjectPage() {
     }, 0);
     const t = setInterval(() => {
       void load();
-    }, 2500);
+    }, 4000);
     return () => {
       clearTimeout(boot);
       clearInterval(t);
@@ -89,6 +108,12 @@ export default function ProjectPage() {
       .catch(() => undefined);
   }, []);
 
+  function updatePrompt(next: string) {
+    promptRef.current = next;
+    promptDirtyRef.current = true;
+    setPrompt(next);
+  }
+
   async function onPickFiles(files: FileList | null) {
     if (!files?.length) return;
     setError(null);
@@ -111,11 +136,8 @@ export default function ProjectPage() {
         setUploadProgress(`Import ${i + 1}/${pendingFiles.length} — ${file.name}`);
         try {
           const useBlob = file.size > 4 * 1024 * 1024;
-          if (useBlob) {
-            await uploadViaBlob(file);
-          } else {
-            await uploadDirect(file);
-          }
+          if (useBlob) await uploadViaBlob(file);
+          else await uploadDirect(file);
           imported += 1;
         } catch (err) {
           const message = err instanceof Error ? err.message : "Upload échoué";
@@ -124,23 +146,19 @@ export default function ProjectPage() {
       }
 
       await load();
-      // Force a second refresh shortly after (Blob callback may land slightly later)
       setTimeout(() => {
         void load();
       }, 1500);
 
       if (imported > 0) {
         setPendingFiles([]);
-        setUploadProgress(`${imported} vidéo(s) importée(s). Traitement en cours…`);
+        setUploadProgress(`${imported} vidéo(s) importée(s).`);
       } else {
         setUploadProgress(null);
       }
 
-      if (failures.length) {
-        setError(failures.join("\n"));
-      } else if (imported === 0) {
-        setError("Aucune vidéo importée. Réessaie ou vérifie Vercel Blob.");
-      }
+      if (failures.length) setError(failures.join("\n"));
+      else if (imported === 0) setError("Aucune vidéo importée. Réessaie ou vérifie Vercel Blob.");
     } finally {
       setUploading(false);
     }
@@ -155,18 +173,16 @@ export default function ProjectPage() {
       cache: "no-store",
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || `Upload échoué (${res.status})`);
-    }
-    if (!data.videos?.length) {
-      throw new Error("Le serveur n'a renvoyé aucune vidéo.");
-    }
-    // Show videos immediately (don't wait for a potentially cached reload)
+    if (!res.ok) throw new Error(data.error || `Upload échoué (${res.status})`);
+    if (!data.videos?.length) throw new Error("Le serveur n'a renvoyé aucune vidéo.");
     setProject((prev) =>
       prev
         ? {
             ...prev,
-            videos: [...data.videos, ...prev.videos.filter((v) => !data.videos.some((n: { id: string }) => n.id === v.id))],
+            videos: [
+              ...data.videos,
+              ...prev.videos.filter((v) => !data.videos.some((n: { id: string }) => n.id === v.id)),
+            ],
             status: "pending",
           }
         : prev,
@@ -192,7 +208,7 @@ export default function ProjectPage() {
         message.toLowerCase().includes("blob")
       ) {
         throw new Error(
-          `« ${file.name} » (${(file.size / (1024 * 1024)).toFixed(1)} Mo) nécessite Vercel Blob. Va dans Vercel → Storage → Create → Blob, connecte le projet, redeploy, puis réessaie. Ou utilise une vidéo < 4 Mo.`,
+          `« ${file.name} » (${(file.size / (1024 * 1024)).toFixed(1)} Mo) nécessite Vercel Blob.`,
         );
       }
       throw new Error(message);
@@ -211,9 +227,7 @@ export default function ProjectPage() {
       }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || "Vidéo uploadée mais non enregistrée dans le projet");
-    }
+    if (!res.ok) throw new Error(data.error || "Vidéo uploadée mais non enregistrée dans le projet");
     if (data.video) {
       setProject((prev) =>
         prev
@@ -227,49 +241,72 @@ export default function ProjectPage() {
     }
   }
 
-  async function savePrompt() {
+  async function savePrompt(text?: string) {
+    const value = text ?? promptRef.current;
     setSavingPrompt(true);
+    setError(null);
     try {
       const res = await fetch(`/api/projects/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt: value }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Sauvegarde impossible");
       }
+      promptDirtyRef.current = false;
+      setInfo("Consigne sauvegardée.");
     } finally {
       setSavingPrompt(false);
     }
   }
 
+  async function clearPrompt() {
+    updatePrompt("");
+    setInfo(null);
+    setError(null);
+    try {
+      await savePrompt("");
+      setInfo("Consigne effacée.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d'effacer");
+    }
+  }
+
   async function startGenerate() {
     setError(null);
-    setInfo(null);
-    const trimmed = prompt.trim();
+    setInfo("Clic reçu — préparation…");
+
+    const trimmed = promptRef.current.trim();
     const videoCount = project?.videos?.length ?? 0;
     const activeJobs =
       project?.jobs?.some((j) => j.status === "pending" || j.status === "running") ?? false;
 
     if (videoCount === 0) {
       setError(
-        "Aucune vidéo dans ce projet. Étape 1 : Choisir des vidéos → Importer. Ensuite tu pourras lancer l'analyse.",
+        "Aucune vidéo détectée dans le projet. Vérifie la liste (étape 1). Si tu vois tes vidéos, recharge la page.",
       );
+      setInfo(null);
       return;
     }
     if (!trimmed) {
-      setError("Écris d'abord une consigne de montage dans la zone de texte ci-dessus.");
+      setError("Écris une consigne de montage, puis relance.");
+      setInfo(null);
       return;
     }
 
+    generatingRef.current = true;
     setGenerating(true);
     try {
-      // Clear stuck jobs so a fresh run can start
       if (activeJobs) {
         await fetch(`/api/projects/${id}/jobs`, { method: "DELETE" }).catch(() => undefined);
       }
-      await savePrompt();
+
+      setInfo("Sauvegarde de la consigne…");
+      await savePrompt(trimmed);
+
+      setInfo("Lancement analyse & génération (jusqu'à ~1 min)…");
       const res = await fetch(`/api/projects/${id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -278,13 +315,18 @@ export default function ProjectPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error || `Génération impossible (${res.status})`);
+        setInfo(null);
         return;
       }
-      setInfo(data.message || "Traitement lancé. Suis la progression ci-dessous.");
+      setInfo(data.message || "Traitement lancé. Regarde la progression ci-dessous.");
+      promptDirtyRef.current = false;
+      generatingRef.current = false;
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Génération impossible");
+      setInfo(null);
     } finally {
+      generatingRef.current = false;
       setGenerating(false);
     }
   }
@@ -307,7 +349,7 @@ export default function ProjectPage() {
   const busy = generating || processing || hasActiveJobs;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 pb-28">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="badge mb-2">{statusLabel(project.status)}</p>
@@ -315,6 +357,7 @@ export default function ProjectPage() {
           <p className="text-sm text-[var(--muted)]">
             {project.format} · cible {project.targetDurationSec}s
             {project.tone ? ` · ${project.tone}` : ""}
+            {` · ${project.videos.length} vidéo(s)`}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -329,7 +372,7 @@ export default function ProjectPage() {
             </>
           )}
           {busy && (
-            <button type="button" className="btn btn-ghost" onClick={cancelJobs}>
+            <button type="button" className="btn btn-ghost" onClick={() => void cancelJobs()}>
               Annuler le traitement
             </button>
           )}
@@ -342,11 +385,11 @@ export default function ProjectPage() {
         </div>
       )}
       {error && (
-        <p className="whitespace-pre-wrap text-sm text-[var(--danger)]">{error}</p>
+        <p className="whitespace-pre-wrap rounded-lg border border-[var(--danger)]/40 bg-[rgba(224,122,106,0.08)] p-3 text-sm text-[var(--danger)]">
+          {error}
+        </p>
       )}
-      {info && (
-        <p className="text-sm text-[var(--success)]">{info}</p>
-      )}
+      {info && <p className="text-sm text-[var(--success)]">{info}</p>}
       {aiStatus && (
         <div
           className={`rounded-xl border p-4 text-sm ${
@@ -359,20 +402,14 @@ export default function ProjectPage() {
             {aiStatus.smartAiEnabled ? "IA réelle (OpenAI)" : "Mode démo (heuristiques)"}
           </p>
           <p className="mt-1 text-[var(--muted)]">{aiStatus.message}</p>
-          <p className="mt-2 text-xs text-[var(--muted)]">
-            Transcription : {aiStatus.transcriptionProvider} · Montage : {aiStatus.montageProvider}
-            {aiStatus.openaiKeyConfigured ? "" : " · clé OpenAI absente"}
-          </p>
         </div>
       )}
 
       <section className="surface rounded-2xl p-6">
         <h2 className="font-display mb-3 text-lg font-semibold">1. Import des vidéos</h2>
         <p className="mb-4 text-sm text-[var(--muted)]">
-          Depuis un téléphone : choisis tes vidéos, puis appuie sur <strong>Importer</strong>.
-          Les fichiers &gt; 4&nbsp;Mo nécessitent Vercel Blob (Storage).
+          Choisis tes vidéos, puis appuie sur <strong>Importer</strong>.
         </p>
-
         <div className="flex flex-wrap gap-2">
           <label className="btn btn-ghost cursor-pointer">
             Choisir des vidéos
@@ -405,17 +442,14 @@ export default function ProjectPage() {
                 <span className="truncate">{f.name}</span>
                 <span className="shrink-0 text-[var(--muted)]">
                   {(f.size / (1024 * 1024)).toFixed(1)} Mo
-                  {f.size > 4 * 1024 * 1024 ? " · Blob" : ""}
                 </span>
               </li>
             ))}
           </ul>
         )}
-
         {uploadProgress && (
           <p className="mt-3 text-sm text-[var(--accent-strong)]">{uploadProgress}</p>
         )}
-
         <ul className="mt-4 space-y-2">
           {project.videos.map((v) => (
             <li key={v.id} className="flex justify-between gap-3 text-sm">
@@ -429,7 +463,7 @@ export default function ProjectPage() {
               <span className="badge">{statusLabel(v.status)}</span>
             </li>
           ))}
-          {project.videos.length === 0 && pendingFiles.length === 0 && (
+          {project.videos.length === 0 && (
             <li className="text-sm text-[var(--muted)]">Aucune vidéo importée.</li>
           )}
         </ul>
@@ -440,66 +474,48 @@ export default function ProjectPage() {
         <textarea
           className="input min-h-32"
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => updatePrompt(e.target.value)}
+          onFocus={() => {
+            promptFocusedRef.current = true;
+          }}
+          onBlur={() => {
+            promptFocusedRef.current = false;
+          }}
           placeholder="Décrivez le montage souhaité…"
         />
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => void savePrompt()}
-            disabled={savingPrompt || generating}
-          >
-            {savingPrompt ? "Sauvegarde…" : "Sauvegarder la consigne"}
+          <button type="button" className="btn btn-ghost" onClick={() => void savePrompt()}>
+            {savingPrompt ? "Sauvegarde…" : "Sauvegarder"}
           </button>
-          {/* Never use disabled= for this CTA — greyed buttons feel broken on mobile.
-              Validation happens inside startGenerate with a clear error message. */}
-          <button
-            type="button"
-            className="btn btn-primary min-h-12 min-w-[12rem] touch-manipulation"
-            onClick={() => void startGenerate()}
-            aria-busy={generating}
-          >
-            {generating
-              ? "Lancement…"
-              : busy
-                ? "Relancer analyse & génération"
-                : "Lancer analyse & génération"}
+          <button type="button" className="btn btn-ghost" onClick={() => void clearPrompt()}>
+            Effacer la consigne
           </button>
         </div>
         <p className="mt-2 text-xs text-[var(--muted)]">
-          {project.videos.length === 0
-            ? "Bouton actif, mais il faut d’abord importer au moins une vidéo (étape 1)."
-            : `${project.videos.length} vidéo(s) · ${
-                prompt.trim() ? "consigne OK" : "ajoute une consigne puis lance"
-              }`}
+          {project.videos.length} vidéo(s) · consigne {prompt.trim() ? "remplie" : "vide"}
         </p>
-        {!prompt.trim() && project.videos.length > 0 && (
-          <p className="mt-2 text-xs text-[var(--muted)]">
-            Exemples : « Monte un reel dynamique de 30s, coupe les silences, accroche forte. »
-          </p>
-        )}
       </section>
 
-      {/* Sticky mobile CTA — always reachable */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--line)] bg-[var(--bg)]/95 p-3 backdrop-blur md:hidden">
+      <section className="surface rounded-2xl p-6">
+        <h2 className="font-display mb-3 text-lg font-semibold">3. Lancer le montage IA</h2>
+        <p className="mb-4 text-sm text-[var(--muted)]">
+          Analyse les vidéos puis génère la timeline selon ta consigne.
+        </p>
         <button
           type="button"
-          className="btn btn-primary w-full min-h-12 touch-manipulation"
+          className="btn btn-primary min-h-14 w-full max-w-md touch-manipulation text-base"
           onClick={() => void startGenerate()}
-          aria-busy={generating}
         >
           {generating
-            ? "Lancement…"
+            ? "Traitement en cours… (patiente)"
             : busy
               ? "Relancer analyse & génération"
               : "Lancer analyse & génération"}
         </button>
-      </div>
-      <div className="h-20 md:hidden" aria-hidden />
+      </section>
 
       <section className="surface rounded-2xl p-6">
-        <h2 className="font-display mb-3 text-lg font-semibold">3. Progression</h2>
+        <h2 className="font-display mb-3 text-lg font-semibold">4. Progression</h2>
         {failedJob?.errorLog && (
           <p className="mb-3 whitespace-pre-wrap rounded-lg border border-[var(--danger)]/40 bg-[rgba(224,122,106,0.08)] p-3 text-sm text-[var(--danger)]">
             Échec {failedJob.type} : {failedJob.errorLog.slice(0, 500)}
@@ -536,6 +552,25 @@ export default function ProjectPage() {
           </p>
         )}
       </section>
+
+      <div
+        className="fixed inset-x-0 bottom-0 border-t border-[var(--line)] bg-[var(--bg)] p-3"
+        style={{ zIndex: 100 }}
+      >
+        <div className="mx-auto max-w-6xl">
+          <button
+            type="button"
+            className="btn btn-primary min-h-14 w-full touch-manipulation text-base"
+            onClick={() => void startGenerate()}
+          >
+            {generating
+              ? "Traitement en cours…"
+              : busy
+                ? "Relancer analyse & génération"
+                : "Lancer analyse & génération"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

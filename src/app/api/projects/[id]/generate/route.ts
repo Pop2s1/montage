@@ -104,15 +104,15 @@ export async function POST(req: Request, ctx: Ctx) {
         : "mode démo";
 
     if (isVercelRuntime() || process.env.INLINE_WORKER === "1") {
-      // Drain now inside the request — waitUntil alone often dies before import→generate finishes.
+      // Process a few jobs now so progress starts, then continue in background.
+      // Avoid draining 20+ jobs inline (9 videos × Whisper) — that freezes the button UI.
       let drained = 0;
       try {
-        drained = await kickQueue(24);
+        drained = await kickQueue(6);
       } catch (err) {
         console.error("[generate] inline drain failed", err);
       }
-      // Keep going after the response for remaining / long OpenAI jobs
-      waitUntil(kickQueue(40));
+      waitUntil(kickQueue(60));
 
       return NextResponse.json(
         {
@@ -121,11 +121,7 @@ export async function POST(req: Request, ctx: Ctx) {
           drained,
           needsUpstream,
           drivers: { transcription: transcriptionDriver, montage: montageDriver },
-          message: needsUpstream
-            ? refreshingTranscripts > 0
-              ? `Transcription Whisper + montage ${aiLabel} en cours (${drained} étape(s) déjà traitée(s)).`
-              : `Analyse / génération ${aiLabel} en cours (${drained} étape(s) traitée(s)). Regarde la progression.`
-            : `Génération ${aiLabel} en cours (${drained} étape(s) traitée(s)).`,
+          message: `Pipeline ${aiLabel} démarré (${drained} étape(s) déjà faites). La suite continue automatiquement — regarde Progression.`,
         },
         { status: 202 },
       );
