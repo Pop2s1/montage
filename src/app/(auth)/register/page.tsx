@@ -38,7 +38,7 @@ export default function RegisterPage() {
     });
     setLoading(false);
     if (login?.error) {
-      router.push("/login");
+      setError("Compte créé, mais connexion impossible. Essayez via la page Connexion.");
       return;
     }
     router.push("/dashboard");

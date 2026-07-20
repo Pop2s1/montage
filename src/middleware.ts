@@ -17,7 +17,23 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = await getToken({ req, secret: process.env.AUTH_SECRET });
+  // Auth.js v5 stores the JWT in a prefixed cookie on HTTPS (Vercel).
+  const isSecure =
+    req.nextUrl.protocol === "https:" ||
+    process.env.VERCEL === "1" ||
+    process.env.NODE_ENV === "production";
+  const cookieName = isSecure
+    ? "__Secure-authjs.session-token"
+    : "authjs.session-token";
+
+  const token = await getToken({
+    req,
+    secret: process.env.AUTH_SECRET,
+    secureCookie: isSecure,
+    cookieName,
+    salt: cookieName,
+  });
+
   if (!token) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
