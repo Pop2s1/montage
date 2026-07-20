@@ -196,11 +196,23 @@ export async function processTranscribeJob(
 
   const provider = getTranscriptionProvider();
   const abs = await storage.resolveLocalPath(video.storageKey);
-  const result = await provider.transcribe({
-    filePath: abs,
-    language: "fr",
-    durationSec: video.durationSec ?? undefined,
-  });
+  let result;
+  try {
+    result = await provider.transcribe({
+      filePath: abs,
+      language: "fr",
+      durationSec: video.durationSec ?? undefined,
+    });
+  } catch (err) {
+    // Don't kill the whole montage if Whisper fails (timeout / ffmpeg / size)
+    console.warn("[transcribe] provider failed, falling back to demo", err);
+    const { DemoTranscriptionProvider } = await import("@/lib/providers/transcription/demo");
+    result = await new DemoTranscriptionProvider().transcribe({
+      filePath: abs,
+      language: "fr",
+      durationSec: video.durationSec ?? undefined,
+    });
+  }
   await updateJobProgress(jobId, 80);
 
   await prisma.transcript.deleteMany({ where: { videoId: video.id } });

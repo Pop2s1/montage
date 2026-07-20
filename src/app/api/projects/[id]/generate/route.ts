@@ -98,16 +98,40 @@ export async function POST(req: Request, ctx: Ctx) {
       },
     });
 
-    if (isVercelRuntime() || process.env.INLINE_WORKER === "1") {
-      waitUntil(kickQueue(40));
-    } else {
-      void kickQueue(40);
-    }
-
     const aiLabel =
       montageDriver === "openai" || transcriptionDriver === "openai"
         ? "IA OpenAI"
         : "mode démo";
+
+    if (isVercelRuntime() || process.env.INLINE_WORKER === "1") {
+      // Drain now inside the request — waitUntil alone often dies before import→generate finishes.
+      let drained = 0;
+      try {
+        drained = await kickQueue(24);
+      } catch (err) {
+        console.error("[generate] inline drain failed", err);
+      }
+      // Keep going after the response for remaining / long OpenAI jobs
+      waitUntil(kickQueue(40));
+
+      return NextResponse.json(
+        {
+          ok: true,
+          enqueued,
+          drained,
+          needsUpstream,
+          drivers: { transcription: transcriptionDriver, montage: montageDriver },
+          message: needsUpstream
+            ? refreshingTranscripts > 0
+              ? `Transcription Whisper + montage ${aiLabel} en cours (${drained} étape(s) déjà traitée(s)).`
+              : `Analyse / génération ${aiLabel} en cours (${drained} étape(s) traitée(s)). Regarde la progression.`
+            : `Génération ${aiLabel} en cours (${drained} étape(s) traitée(s)).`,
+        },
+        { status: 202 },
+      );
+    }
+
+    void kickQueue(40);
 
     return NextResponse.json(
       {

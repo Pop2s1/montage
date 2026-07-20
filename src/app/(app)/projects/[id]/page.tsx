@@ -293,6 +293,7 @@ export default function ProjectPage() {
     project.status,
   );
   const hasActiveJobs = project.jobs.some((j) => j.status === "pending" || j.status === "running");
+  const failedJob = project.jobs.find((j) => j.status === "failed" && j.errorLog);
   const busy = generating || processing || hasActiveJobs;
 
   return (
@@ -440,9 +441,13 @@ export default function ProjectPage() {
             type="button"
             className="btn btn-primary"
             onClick={() => void startGenerate()}
-            disabled={project.videos.length === 0 || busy}
+            disabled={project.videos.length === 0 || generating}
           >
-            {busy ? "Traitement en cours…" : "Lancer analyse & génération"}
+            {generating
+              ? "Lancement…"
+              : busy
+                ? "Relancer analyse & génération"
+                : "Lancer analyse & génération"}
           </button>
         </div>
         {!prompt.trim() && (
@@ -461,11 +466,21 @@ export default function ProjectPage() {
 
       <section className="surface rounded-2xl p-6">
         <h2 className="font-display mb-3 text-lg font-semibold">3. Progression</h2>
+        {failedJob?.errorLog && (
+          <p className="mb-3 whitespace-pre-wrap rounded-lg border border-[var(--danger)]/40 bg-[rgba(224,122,106,0.08)] p-3 text-sm text-[var(--danger)]">
+            Échec {failedJob.type} : {failedJob.errorLog.slice(0, 500)}
+          </p>
+        )}
         <ul className="space-y-2">
           {project.jobs.slice(0, 12).map((j) => (
             <li key={j.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-sm">
               <span>
                 {j.type} — {statusLabel(j.status)}
+                {j.errorLog ? (
+                  <span className="mt-0.5 block truncate text-xs text-[var(--danger)]">
+                    {j.errorLog.slice(0, 120)}
+                  </span>
+                ) : null}
               </span>
               <div className="h-2 w-28 overflow-hidden rounded bg-[var(--bg-soft)]">
                 <div
