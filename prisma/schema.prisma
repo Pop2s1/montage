@@ -1,0 +1,355 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  plan         String    @default("free") // free | pro | team
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  projects     Project[]
+  usageEvents  UsageEvent[]
+  accounts     AccountLimit?
+
+  @@map("users")
+}
+
+model AccountLimit {
+  id                      String @id @default(cuid())
+  userId                  String @unique
+  user                    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  maxImportMinutesPerMonth Int   @default(120)
+  maxStorageBytes         Int    @default(2147483647) // ~2GB
+  maxExportsPerMonth      Int    @default(20)
+  maxProjects             Int    @default(10)
+
+  @@map("account_limits")
+}
+
+model Project {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  format          String   @default("instagram_reel") // instagram_reel | tiktok | youtube_short | youtube_horizontal | custom
+  customWidth     Int?
+  customHeight    Int?
+  targetDurationSec Int    @default(45)
+  tone            String?  // dynamique | professionnel | emotionnel | humoristique | educatif | promotionnel | storytelling
+  prompt          String?
+  status          String   @default("draft")
+  // draft | pending | importing | analyzing | transcribing | generating | ready | exporting | completed | failed | cancelled
+  thumbnailPath   String?
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  videos          VideoAsset[]
+  analyses        VideoAnalysis[]
+  transcripts     Transcript[]
+  scenes          Scene[]
+  timelines       Timeline[]
+  variants        Variant[]
+  exports         ExportJob[]
+  jobs            ProcessingJob[]
+  editorial       EditorialContent?
+  settings        ProjectSettings?
+  usageEvents     UsageEvent[]
+
+  @@index([userId, updatedAt])
+  @@map("projects")
+}
+
+model ProjectSettings {
+  id                String  @id @default(cuid())
+  projectId         String  @unique
+  project           Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  subtitleStyle     String  @default("modern_bold")
+  subtitlePosition  String  @default("bottom")
+  subtitleFontSize  Int     @default(48)
+  burnSubtitles     Boolean @default(true)
+  autoSave          Boolean @default(true)
+  language          String  @default("fr")
+
+  @@map("project_settings")
+}
+
+model VideoAsset {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  originalName    String
+  storageKey      String
+  mimeType        String
+  sizeBytes       Int
+  durationSec     Float?
+  width           Int?
+  height          Int?
+  fps             Float?
+  checksum        String?
+  status          String   @default("uploading") // uploading | ready | analyzing | failed
+  thumbnailPath   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  analyses        VideoAnalysis[]
+  transcripts     Transcript[]
+  scenes          Scene[]
+  segments        TimelineSegment[]
+
+  @@index([projectId])
+  @@map("video_assets")
+}
+
+model VideoAnalysis {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  videoId         String
+  video           VideoAsset @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  status          String   @default("pending")
+  silenceRanges   String   @default("[]") // JSON [{start,end}]
+  sceneCuts       String   @default("[]") // JSON [seconds]
+  qualityScore    Float?
+  audioScore      Float?
+  visualScore     Float?
+  blurryRanges    String   @default("[]")
+  interestingMoments String @default("[]") // JSON [{start,end,score,reason}]
+  metadata        String   @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId, videoId])
+  @@map("video_analyses")
+}
+
+model Transcript {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  videoId     String
+  video       VideoAsset @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  language    String   @default("fr")
+  fullText    String   @default("")
+  wordsJson   String   @default("[]") // [{word,start,end,confidence}]
+  provider    String   @default("demo")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId, videoId])
+  @@map("transcripts")
+}
+
+model Scene {
+  id          String  @id @default(cuid())
+  projectId   String
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  videoId     String
+  video       VideoAsset @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  startSec    Float
+  endSec      Float
+  score       Float   @default(0)
+  kind        String  @default("scene") // scene | silence | dialogue | broll
+  label       String?
+
+  @@index([projectId, videoId])
+  @@map("scenes")
+}
+
+model Variant {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  style       String   // dynamique | emotionnelle | courte | professionnelle | ...
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  timelines   Timeline[]
+  exports     ExportJob[]
+
+  @@index([projectId])
+  @@map("variants")
+}
+
+model Timeline {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  variantId   String?
+  variant     Variant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  name        String   @default("Montage principal")
+  durationSec Float    @default(0)
+  version     Int      @default(1)
+  snapshotJson String  @default("{}") // full editable state for undo
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tracks      Track[]
+  segments    TimelineSegment[]
+  subtitles   SubtitleCue[]
+  texts       OverlayText[]
+
+  @@index([projectId])
+  @@map("timelines")
+}
+
+model Track {
+  id          String   @id @default(cuid())
+  timelineId  String
+  timeline    Timeline @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  type        String   // video | audio | subtitle | text | graphics
+  name        String
+  orderIndex  Int      @default(0)
+
+  @@index([timelineId])
+  @@map("tracks")
+}
+
+model TimelineSegment {
+  id            String   @id @default(cuid())
+  timelineId    String
+  timeline      Timeline @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  videoId       String?
+  video         VideoAsset? @relation(fields: [videoId], references: [id], onDelete: SetNull)
+  trackType     String   @default("video")
+  sourceStartSec Float
+  sourceEndSec  Float
+  timelineStartSec Float
+  durationSec   Float
+  spokenText    String?
+  selectionReason String?
+  relevanceScore Float   @default(0)
+  segmentType   String   @default("dialogue") // dialogue | illustration | introduction | conclusion | transition
+  orderIndex    Int      @default(0)
+  cropJson      String   @default("{}") // {x,y,w,h} normalized
+
+  @@index([timelineId, orderIndex])
+  @@map("timeline_segments")
+}
+
+model SubtitleCue {
+  id            String   @id @default(cuid())
+  timelineId    String
+  timeline      Timeline @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  startSec      Float
+  endSec        Float
+  text          String
+  wordsJson     String   @default("[]") // word-level highlight
+  style         String   @default("modern_bold")
+  position      String   @default("bottom")
+  orderIndex    Int      @default(0)
+
+  @@index([timelineId])
+  @@map("subtitle_cues")
+}
+
+model OverlayText {
+  id            String   @id @default(cuid())
+  timelineId    String
+  timeline      Timeline @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  kind          String   // hook | title | cta | keyword
+  text          String
+  startSec      Float
+  endSec        Float
+  styleJson     String   @default("{}")
+
+  @@index([timelineId])
+  @@map("overlay_texts")
+}
+
+model EditorialContent {
+  id              String  @id @default(cuid())
+  projectId       String  @unique
+  project         Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hook            String?
+  midTitlesJson   String  @default("[]")
+  keywordsJson    String  @default("[]")
+  cta             String?
+  publishTitle    String?
+  description     String?
+  instagramCaption String?
+  youtubeDescription String?
+  hashtagsJson    String  @default("[]")
+  coverText       String?
+  variantsJson    String  @default("[]")
+
+  @@map("editorial_contents")
+}
+
+model ExportJob {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  variantId       String?
+  variant         Variant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  format          String
+  width           Int
+  height          Int
+  fps             Int      @default(30)
+  quality         String   @default("high") // low | medium | high
+  burnSubtitles   Boolean  @default(true)
+  status          String   @default("pending")
+  progress        Int      @default(0)
+  outputKey       String?
+  estimatedBytes  Int?
+  actualBytes     Int?
+  errorMessage    String?
+  downloadToken   String?
+  downloadExpiresAt DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId])
+  @@map("export_jobs")
+}
+
+model ProcessingJob {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type          String   // import | analyze | transcribe | generate | export
+  status        String   @default("pending") // pending | running | completed | failed | cancelled
+  progress      Int      @default(0)
+  attempts      Int      @default(0)
+  maxAttempts   Int      @default(3)
+  payloadJson   String   @default("{}")
+  resultJson    String   @default("{}")
+  errorLog      String?
+  lockedAt      DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([projectId])
+  @@map("processing_jobs")
+}
+
+model UsageEvent {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  kind        String   // import_minutes | transcribed_minutes | analyzed_minutes | processing_ms | export | storage_bytes | external_cost
+  quantity    Float
+  unit        String
+  metaJson    String   @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([userId, kind, createdAt])
+  @@map("usage_events")
+}
