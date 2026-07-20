@@ -1,9 +1,10 @@
 name: Deploy to Vercel
 
 on:
-  push:
-    branches: [main, cursor/ai-video-editor-mvp-8786]
   workflow_dispatch:
+
+# Disabled on push: Vercel Git integration already deploys main.
+# Run manually only if VERCEL_TOKEN / ORG / PROJECT secrets are configured.
 
 jobs:
   deploy:
@@ -12,8 +13,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        # version comes from package.json "packageManager"
 
       - uses: actions/setup-node@v4
         with:
@@ -23,7 +23,7 @@ jobs:
       - name: Install
         run: pnpm install
 
-      - name: Pull Vercel env
+      - name: Deploy
         uses: amondnet/vercel-action@v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
