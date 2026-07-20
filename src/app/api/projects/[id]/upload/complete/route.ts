@@ -6,11 +6,14 @@ import { enqueueAndProcess } from "@/lib/queue/inline";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const schema = z.object({
   url: z.string().url(),
   pathname: z.string().min(1),
   originalName: z.string().min(1).max(260),
-  sizeBytes: z.number().int().positive(),
+  sizeBytes: z.number().int().nonnegative(),
   mimeType: z.string().optional(),
 });
 
@@ -33,35 +36,71 @@ export async function POST(req: Request, ctx: Ctx) {
     }
 
     const { url, pathname, originalName, sizeBytes, mimeType } = parsed.data;
+    const storageKey = `blob:${url}`;
 
-    // Store blob URL as storage key (downloaded to /tmp by the worker when needed)
-    const video = await prisma.videoAsset.create({
-      data: {
-        projectId,
-        originalName,
-        storageKey: `blob:${url}`,
-        mimeType: mimeType || guessMime(originalName),
-        sizeBytes,
-        status: "uploading",
-        checksum: pathname,
-      },
+    const existing = await prisma.videoAsset.findFirst({
+      where: { projectId, storageKey },
     });
 
-    await enqueueAndProcess({
-      projectId,
-      type: "import",
-      payload: { videoId: video.id },
-    });
+    const video = existing
+      ? await prisma.videoAsset.update({
+          where: { id: existing.id },
+          data: {
+            originalName,
+            sizeBytes: sizeBytes || existing.sizeBytes,
+            mimeType: mimeType || existing.mimeType,
+            checksum: pathname,
+            status: existing.status === "ready" ? "ready" : "uploading",
+          },
+        })
+      : await prisma.videoAsset.create({
+          data: {
+            projectId,
+            originalName,
+            storageKey,
+            mimeType: mimeType || guessMime(originalName),
+            sizeBytes,
+            status: "uploading",
+            checksum: pathname,
+          },
+        });
+
+    // Only enqueue if not already processed
+    if (!existing || existing.status === "uploading") {
+      const pendingJob = await prisma.processingJob.findFirst({
+        where: {
+          projectId,
+          type: "import",
+          status: { in: ["pending", "running", "completed"] },
+          payloadJson: { contains: video.id },
+        },
+      });
+      if (!pendingJob) {
+        await enqueueAndProcess({
+          projectId,
+          type: "import",
+          payload: { videoId: video.id },
+        });
+      }
+    }
 
     await prisma.project.update({
       where: { id: projectId },
       data: { status: "pending", errorMessage: null },
     });
 
-    return NextResponse.json({ video }, { status: 201 });
+    return NextResponse.json(
+      { video },
+      {
+        status: existing ? 200 : 201,
+        headers: { "Cache-Control": "no-store" },
+      },
+    );
   } catch (err) {
     if (err instanceof Response) return err;
-    throw err;
+    const message = err instanceof Error ? err.message : "complete failed";
+    console.error("[upload/complete]", message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 

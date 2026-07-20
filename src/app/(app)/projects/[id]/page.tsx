@@ -38,7 +38,7 @@ export default function ProjectPage() {
   const [savingPrompt, setSavingPrompt] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/projects/${id}`);
+    const res = await fetch(`/api/projects/${id}`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       setError(data.error || "Erreur de chargement");
@@ -121,7 +121,11 @@ export default function ProjectPage() {
   async function uploadDirect(file: File) {
     const fd = new FormData();
     fd.append("files", file);
-    const res = await fetch(`/api/projects/${id}/upload`, { method: "POST", body: fd });
+    const res = await fetch(`/api/projects/${id}/upload`, {
+      method: "POST",
+      body: fd,
+      cache: "no-store",
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || `Upload échoué (${res.status})`);
@@ -129,6 +133,16 @@ export default function ProjectPage() {
     if (!data.videos?.length) {
       throw new Error("Le serveur n'a renvoyé aucune vidéo.");
     }
+    // Show videos immediately (don't wait for a potentially cached reload)
+    setProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            videos: [...data.videos, ...prev.videos.filter((v) => !data.videos.some((n: { id: string }) => n.id === v.id))],
+            status: "pending",
+          }
+        : prev,
+    );
   }
 
   async function uploadViaBlob(file: File) {
@@ -159,6 +173,7 @@ export default function ProjectPage() {
     const res = await fetch(`/api/projects/${id}/upload/complete`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       body: JSON.stringify({
         url: blob.url,
         pathname: blob.pathname,
@@ -169,8 +184,18 @@ export default function ProjectPage() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      // Blob file is online; completion route failed — still ask UI to reload
       throw new Error(data.error || "Vidéo uploadée mais non enregistrée dans le projet");
+    }
+    if (data.video) {
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              videos: [data.video, ...prev.videos.filter((v) => v.id !== data.video.id)],
+              status: "pending",
+            }
+          : prev,
+      );
     }
   }
 

@@ -8,6 +8,9 @@ import { TONE_PRESETS } from "@/types/domain";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET(_req: Request, ctx: Ctx) {
   try {
     const user = await requireUser();
@@ -17,7 +20,7 @@ export async function GET(_req: Request, ctx: Ctx) {
     const project = await prisma.project.findUnique({
       where: { id },
       include: {
-        videos: true,
+        videos: { orderBy: { createdAt: "desc" } },
         analyses: true,
         transcripts: true,
         settings: true,
@@ -37,7 +40,14 @@ export async function GET(_req: Request, ctx: Ctx) {
       },
     });
 
-    return NextResponse.json({ project });
+    return NextResponse.json(
+      { project },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      },
+    );
   } catch (err) {
     if (err instanceof Response) return err;
     throw err;
