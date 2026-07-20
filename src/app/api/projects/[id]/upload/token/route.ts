@@ -11,8 +11,7 @@ export const maxDuration = 60;
 
 /**
  * Vercel Blob client-upload protocol.
- * NOTE: the "blob.upload-completed" callback is server-to-server (no user cookie),
- * so we must NOT require a session for that type.
+ * blob.upload-completed is server-to-server (no session cookie).
  */
 export async function POST(req: Request, ctx: Ctx) {
   const { id: projectId } = await ctx.params;
@@ -45,8 +44,37 @@ export async function POST(req: Request, ctx: Ctx) {
     const json = await handleUpload({
       body,
       request: req,
-      onBeforeGenerateToken: async (pathname) => {
+      onBeforeGenerateToken: async (pathname, clientPayload) => {
         if (!userId) throw new Error("Non authentifié");
+
+        let videoId: string | undefined;
+        let originalName = pathname.split("/").pop() || "video.mp4";
+        try {
+          const parsed = JSON.parse(clientPayload || "{}") as {
+            videoId?: string;
+            originalName?: string;
+          };
+          videoId = parsed.videoId;
+          if (parsed.originalName) originalName = parsed.originalName;
+        } catch {
+          // ignore
+        }
+
+        // Ensure we always have a DB row before the bytes leave the phone
+        if (!videoId) {
+          const created = await prisma.videoAsset.create({
+            data: {
+              projectId,
+              originalName,
+              storageKey: `pending:${projectId}:${Date.now()}`,
+              mimeType: "video/mp4",
+              sizeBytes: 0,
+              status: "uploading",
+            },
+          });
+          videoId = created.id;
+        }
+
         return {
           allowedContentTypes: [
             "video/mp4",
@@ -62,43 +90,75 @@ export async function POST(req: Request, ctx: Ctx) {
           tokenPayload: JSON.stringify({
             projectId,
             userId,
-            originalName: pathname.split("/").pop() || "video.mp4",
+            videoId,
+            originalName,
           }),
         };
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
-        // Backup registration if the browser never calls /upload/complete
         try {
           const payload = JSON.parse(tokenPayload || "{}") as {
             projectId?: string;
             userId?: string;
+            videoId?: string;
             originalName?: string;
           };
           const pid = payload.projectId || projectId;
-          if (!pid || !payload.userId) return;
+          if (!pid) return;
 
-          const existing = await prisma.videoAsset.findFirst({
-            where: { projectId: pid, storageKey: `blob:${blob.url}` },
-          });
-          if (existing) return;
+          const storageKey = `blob:${blob.url}`;
+          let video = payload.videoId
+            ? await prisma.videoAsset.findFirst({
+                where: { id: payload.videoId, projectId: pid },
+              })
+            : null;
 
-          const video = await prisma.videoAsset.create({
-            data: {
+          if (video) {
+            video = await prisma.videoAsset.update({
+              where: { id: video.id },
+              data: {
+                storageKey,
+                checksum: blob.pathname,
+                mimeType: blob.contentType || video.mimeType,
+                status: video.status === "ready" ? "ready" : "uploading",
+                originalName: payload.originalName || video.originalName,
+              },
+            });
+          } else {
+            const existing = await prisma.videoAsset.findFirst({
+              where: { projectId: pid, storageKey },
+            });
+            if (existing) return;
+
+            video = await prisma.videoAsset.create({
+              data: {
+                projectId: pid,
+                originalName:
+                  payload.originalName || blob.pathname.split("/").pop() || "video.mp4",
+                storageKey,
+                mimeType: blob.contentType || "video/mp4",
+                sizeBytes: 0,
+                status: "uploading",
+                checksum: blob.pathname,
+              },
+            });
+          }
+
+          const pendingJob = await prisma.processingJob.findFirst({
+            where: {
               projectId: pid,
-              originalName: payload.originalName || blob.pathname.split("/").pop() || "video.mp4",
-              storageKey: `blob:${blob.url}`,
-              mimeType: blob.contentType || "video/mp4",
-              sizeBytes: 0,
-              status: "uploading",
-              checksum: blob.pathname,
+              type: "import",
+              status: { in: ["pending", "running", "completed"] },
+              payloadJson: { contains: video.id },
             },
           });
-
-          await enqueueAndProcess({
-            projectId: pid,
-            type: "import",
-            payload: { videoId: video.id },
-          });
+          if (!pendingJob) {
+            await enqueueAndProcess({
+              projectId: pid,
+              type: "import",
+              payload: { videoId: video.id },
+            });
+          }
 
           await prisma.project.update({
             where: { id: pid },

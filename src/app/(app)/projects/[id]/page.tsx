@@ -202,10 +202,12 @@ export default function ProjectPage() {
             : (checkData.videos?.length ?? 0);
         if (imported > 0 && confirmed === 0) {
           setError(
-            "Upload terminé côté navigateur, mais 0 vidéo en base. Appuie sur « Réparer les imports » ou réimporte.",
+            "Aucune vidéo n'est enregistrée en base pour ce projet. Les fichiers n'ont pas été persistés (souvent Blob → complete). Réimporte via Importer et attends la confirmation « enregistrée en base », puis relance.",
           );
         } else if (confirmed > 0) {
-          setUploadProgress(`${confirmed} vidéo(s) confirmée(s) en base.`);
+          setUploadProgress(
+            `${confirmed} vidéo(s) enregistrée(s) en base. Tu peux lancer l'analyse.`,
+          );
         }
       } catch {
         // ignore
@@ -259,14 +261,60 @@ export default function ProjectPage() {
   }
 
   async function uploadViaBlob(file: File) {
+    // 1) Create DB row first so we never "lose" the import
+    const prepareRes = await fetch(`/api/projects/${id}/videos/prepare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        originalName: file.name || "video.mp4",
+        sizeBytes: file.size,
+        mimeType: file.type || "video/mp4",
+      }),
+    });
+    const prepareData = await prepareRes.json().catch(() => ({}));
+    if (!prepareRes.ok || !prepareData.videoId) {
+      throw new Error(
+        prepareData.error ||
+          `Impossible de créer l'entrée vidéo en base (${prepareRes.status}). Vérifie DATABASE_URL sur Vercel.`,
+      );
+    }
+
+    const videoId = prepareData.videoId as string;
+    const blobPathname =
+      (prepareData.blobPathname as string) ||
+      `projects/${id}/${file.name || "video.mp4"}`;
+
+    // Show pending row immediately
+    if (prepareData.video) {
+      setProject((prev) => {
+        const next = prev
+          ? {
+              ...prev,
+              videos: [
+                prepareData.video,
+                ...prev.videos.filter((v) => v.id !== prepareData.video.id),
+              ],
+              status: "pending",
+            }
+          : prev;
+        if (next) projectRef.current = next;
+        return next;
+      });
+    }
+
     const { upload } = await import("@vercel/blob/client");
     let blob;
     try {
-      blob = await upload(file.name || `video-${Date.now()}.mp4`, file, {
+      blob = await upload(blobPathname, file, {
         access: "public",
         handleUploadUrl: `/api/projects/${id}/upload/token`,
         multipart: true,
         contentType: file.type || "video/mp4",
+        clientPayload: JSON.stringify({
+          videoId,
+          originalName: file.name || "video.mp4",
+        }),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Blob upload failed";
@@ -289,10 +337,9 @@ export default function ProjectPage() {
       originalName: file.name || "video.mp4",
       sizeBytes: file.size,
       mimeType: file.type || "video/mp4",
+      videoId,
     };
     rememberUpload(id, { ...payload, savedAt: Date.now() });
-
-    let video: ProjectPayload["videos"][number] | null = null;
 
     const res = await fetch(`/api/projects/${id}/upload/complete`, {
       method: "POST",
@@ -301,54 +348,44 @@ export default function ProjectPage() {
       body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data.video) {
-      video = data.video;
-    } else {
+    let video = data.video as ProjectPayload["videos"][number] | undefined;
+
+    if (!res.ok || !video) {
+      // Row already exists from prepare — try sync attach + Blob scan
       const sync = await fetch(`/api/projects/${id}/videos/sync`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify({ videos: [payload] }),
+        body: JSON.stringify({ videos: [payload], fromBlobStore: true }),
       });
       const syncData = await sync.json().catch(() => ({}));
-      if (!sync.ok || !syncData.videos?.[0]) {
+      if (!sync.ok) {
         throw new Error(
-          data.error || syncData.error || "Vidéo sur Blob mais non enregistrée en base",
+          data.error || syncData.error || "Upload Blob OK mais liaison base échouée",
         );
       }
-      video = syncData.videos[0];
+      video =
+        (syncData.videos as ProjectPayload["videos"] | undefined)?.find(
+          (v) => v.id === videoId,
+        ) ??
+        (syncData.videos as ProjectPayload["videos"] | undefined)?.[0] ??
+        prepareData.video;
     }
 
-    // Confirm the row is readable from DB
-    const verify = await fetch(`/api/projects/${id}/videos/sync`, { cache: "no-store" });
-    const verifyData = await verify.json().catch(() => ({}));
-    const found =
-      verify.ok &&
-      Array.isArray(verifyData.videos) &&
-      verifyData.videos.some((v: { id: string }) => v.id === video!.id);
-
-    if (!found) {
-      const sync = await fetch(`/api/projects/${id}/videos/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ videos: [payload] }),
-      });
-      const syncData = await sync.json().catch(() => ({}));
-      if (!sync.ok || !syncData.videos?.[0]) {
-        throw new Error("Impossible de confirmer l'enregistrement de la vidéo en base");
-      }
-      video = syncData.videos[0];
+    if (!video?.id) {
+      throw new Error(
+        "Aucune vidéo n'est enregistrée en base pour ce projet. Les fichiers n'ont pas été persistés (souvent Blob → complete). Réimporte via Importer et attends la confirmation « enregistrée en base », puis relance.",
+      );
     }
 
-    rememberUpload(id, { ...payload, videoId: video!.id, savedAt: Date.now() });
+    rememberUpload(id, { ...payload, videoId: video.id, savedAt: Date.now() });
     setUploadProgress(`« ${file.name} » enregistrée en base`);
 
     setProject((prev) => {
       const next = prev
         ? {
             ...prev,
-            videos: [video!, ...prev.videos.filter((v) => v.id !== video!.id)],
+            videos: [video, ...prev.videos.filter((v) => v.id !== video.id)],
             status: "pending",
           }
         : prev;
@@ -392,25 +429,22 @@ export default function ProjectPage() {
 
   async function repairImports() {
     setError(null);
+    setInfo("Réparation : scan Blob + session…");
     const stored = readStoredUploads(id);
-    if (stored.length === 0) {
-      setError(
-        "Aucune vidéo Blob mémorisée sur cet appareil. Réimporte tes fichiers avec Importer.",
-      );
-      return;
-    }
-    setInfo(`Réparation de ${stored.length} import(s)…`);
+
     const sync = await fetch(`/api/projects/${id}/videos/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
+        fromBlobStore: true,
         videos: stored.map((s) => ({
           url: s.url,
           pathname: s.pathname,
           originalName: s.originalName,
           sizeBytes: s.sizeBytes,
           mimeType: s.mimeType,
+          videoId: s.videoId,
         })),
       }),
     });
@@ -424,7 +458,14 @@ export default function ProjectPage() {
       typeof syncData.videoCount === "number"
         ? syncData.videoCount
         : (syncData.videos?.length ?? 0);
-    setInfo(`${count} vidéo(s) en base après réparation.`);
+    if (count === 0) {
+      setError(
+        "Aucune vidéo n'est enregistrée en base pour ce projet. Les fichiers n'ont pas été persistés (souvent Blob → complete). Réimporte via Importer et attends la confirmation « enregistrée en base », puis relance.",
+      );
+      setInfo(null);
+    } else {
+      setInfo(`${count} vidéo(s) enregistrée(s) en base après réparation.`);
+    }
     await load();
   }
 
@@ -448,38 +489,37 @@ export default function ProjectPage() {
 
     let videoCount = await countServerVideos();
 
-    // Repair: re-register Blob uploads remembered locally if DB is empty
+    // Repair: re-register from session + Vercel Blob store
     if (videoCount === 0) {
       const stored = readStoredUploads(id);
-      if (stored.length > 0) {
-        setInfo(`Réparation : enregistrement de ${stored.length} vidéo(s) Blob en base…`);
-        const sync = await fetch(`/api/projects/${id}/videos/sync`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            videos: stored.map((s) => ({
-              url: s.url,
-              pathname: s.pathname,
-              originalName: s.originalName,
-              sizeBytes: s.sizeBytes,
-              mimeType: s.mimeType,
-            })),
-          }),
-        });
-        const syncData = await sync.json().catch(() => ({}));
-        if (sync.ok) {
-          videoCount =
-            typeof syncData.videoCount === "number"
-              ? syncData.videoCount
-              : (syncData.videos?.length ?? 0);
-          await load();
-        }
+      setInfo("Réparation auto : scan Blob / session…");
+      const sync = await fetch(`/api/projects/${id}/videos/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          fromBlobStore: true,
+          videos: stored.map((s) => ({
+            url: s.url,
+            pathname: s.pathname,
+            originalName: s.originalName,
+            sizeBytes: s.sizeBytes,
+            mimeType: s.mimeType,
+            videoId: s.videoId,
+          })),
+        }),
+      });
+      const syncData = await sync.json().catch(() => ({}));
+      if (sync.ok) {
+        videoCount =
+          typeof syncData.videoCount === "number"
+            ? syncData.videoCount
+            : (syncData.videos?.length ?? 0);
+        await load();
       }
     }
 
     if (videoCount === 0) {
-      // Clear deceptive local list
       setProject((prev) => {
         if (!prev) return prev;
         const cleared = { ...prev, videos: [] };

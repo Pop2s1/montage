@@ -15,10 +15,11 @@ const schema = z.object({
   originalName: z.string().min(1).max(260),
   sizeBytes: z.number().int().nonnegative(),
   mimeType: z.string().optional(),
+  videoId: z.string().min(1).optional(),
 });
 
 /**
- * Registers a video already uploaded to Vercel Blob and enqueues processing.
+ * Attach a Blob URL to an existing (prepare) video row, or create one.
  */
 export async function POST(req: Request, ctx: Ctx) {
   try {
@@ -32,56 +33,74 @@ export async function POST(req: Request, ctx: Ctx) {
 
     const parsed = schema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) {
-      return NextResponse.json({ error: "Métadonnées invalides" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Métadonnées invalides", details: parsed.error.flatten() },
+        { status: 400 },
+      );
     }
 
-    const { url, pathname, originalName, sizeBytes, mimeType } = parsed.data;
+    const { url, pathname, originalName, sizeBytes, mimeType, videoId } = parsed.data;
     const storageKey = `blob:${url}`;
 
-    const existing = await prisma.videoAsset.findFirst({
-      where: { projectId, storageKey },
-    });
+    let video =
+      videoId != null
+        ? await prisma.videoAsset.findFirst({ where: { id: videoId, projectId } })
+        : null;
 
-    const video = existing
-      ? await prisma.videoAsset.update({
-          where: { id: existing.id },
-          data: {
-            originalName,
-            sizeBytes: sizeBytes || existing.sizeBytes,
-            mimeType: mimeType || existing.mimeType,
-            checksum: pathname,
-            status: existing.status === "ready" ? "ready" : "uploading",
-          },
-        })
-      : await prisma.videoAsset.create({
-          data: {
-            projectId,
-            originalName,
-            storageKey,
-            mimeType: mimeType || guessMime(originalName),
-            sizeBytes,
-            status: "uploading",
-            checksum: pathname,
-          },
-        });
-
-    // Only enqueue if not already processed
-    if (!existing || existing.status === "uploading") {
-      const pendingJob = await prisma.processingJob.findFirst({
-        where: {
-          projectId,
-          type: "import",
-          status: { in: ["pending", "running", "completed"] },
-          payloadJson: { contains: video.id },
+    if (video) {
+      video = await prisma.videoAsset.update({
+        where: { id: video.id },
+        data: {
+          storageKey,
+          originalName,
+          sizeBytes: sizeBytes || video.sizeBytes,
+          mimeType: mimeType || video.mimeType,
+          checksum: pathname,
+          status: video.status === "ready" ? "ready" : "uploading",
         },
       });
-      if (!pendingJob) {
-        await enqueueAndProcess({
-          projectId,
-          type: "import",
-          payload: { videoId: video.id },
-        });
-      }
+    } else {
+      const existing = await prisma.videoAsset.findFirst({
+        where: { projectId, storageKey },
+      });
+      video = existing
+        ? await prisma.videoAsset.update({
+            where: { id: existing.id },
+            data: {
+              originalName,
+              sizeBytes: sizeBytes || existing.sizeBytes,
+              mimeType: mimeType || existing.mimeType,
+              checksum: pathname,
+              status: existing.status === "ready" ? "ready" : "uploading",
+            },
+          })
+        : await prisma.videoAsset.create({
+            data: {
+              projectId,
+              originalName,
+              storageKey,
+              mimeType: mimeType || guessMime(originalName),
+              sizeBytes,
+              status: "uploading",
+              checksum: pathname,
+            },
+          });
+    }
+
+    const pendingJob = await prisma.processingJob.findFirst({
+      where: {
+        projectId,
+        type: "import",
+        status: { in: ["pending", "running", "completed"] },
+        payloadJson: { contains: video.id },
+      },
+    });
+    if (!pendingJob && video.status !== "ready") {
+      await enqueueAndProcess({
+        projectId,
+        type: "import",
+        payload: { videoId: video.id },
+      });
     }
 
     await prisma.project.update({
@@ -89,10 +108,12 @@ export async function POST(req: Request, ctx: Ctx) {
       data: { status: "pending", errorMessage: null },
     });
 
+    const videoCount = await prisma.videoAsset.count({ where: { projectId } });
+
     return NextResponse.json(
-      { video },
+      { video, videoCount },
       {
-        status: existing ? 200 : 201,
+        status: 200,
         headers: { "Cache-Control": "no-store" },
       },
     );
