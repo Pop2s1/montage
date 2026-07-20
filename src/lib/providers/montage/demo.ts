@@ -23,11 +23,12 @@ export class DemoMontageProvider implements MontageProvider {
   }
 }
 
-interface Candidate extends MontageSegmentDraft {
+export interface Candidate extends MontageSegmentDraft {
   words: TranscriptWord[];
 }
 
-function collectCandidates(input: MontageInput): Candidate[] {
+/** Exposed so OpenAI montage can rank the full candidate pool. */
+export function collectCandidates(input: MontageInput): Candidate[] {
   const out: Candidate[] = [];
 
   for (const video of input.videos) {

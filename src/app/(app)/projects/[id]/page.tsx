@@ -26,16 +26,27 @@ type ProjectPayload = {
   editorial: { hook: string | null; cta: string | null; publishTitle: string | null } | null;
 };
 
+type AiStatus = {
+  smartAiEnabled: boolean;
+  openaiKeyConfigured: boolean;
+  transcriptionProvider: string;
+  montageProvider: string;
+  message: string;
+};
+
 export default function ProjectPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [project, setProject] = useState<ProjectPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/projects/${id}`, { cache: "no-store" });
@@ -60,6 +71,23 @@ export default function ProjectPage() {
       clearInterval(t);
     };
   }, [load]);
+
+  useEffect(() => {
+    void fetch("/api/ai/status", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.message) {
+          setAiStatus({
+            smartAiEnabled: Boolean(data.smartAiEnabled),
+            openaiKeyConfigured: Boolean(data.openaiKeyConfigured),
+            transcriptionProvider: data.transcriptionProvider ?? "demo",
+            montageProvider: data.montageProvider ?? "demo",
+            message: data.message,
+          });
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   async function onPickFiles(files: FileList | null) {
     if (!files?.length) return;
@@ -201,21 +229,54 @@ export default function ProjectPage() {
 
   async function savePrompt() {
     setSavingPrompt(true);
-    await fetch(`/api/projects/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-    });
-    setSavingPrompt(false);
-    await load();
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Sauvegarde impossible");
+      }
+    } finally {
+      setSavingPrompt(false);
+    }
   }
 
   async function startGenerate() {
-    await savePrompt();
-    const res = await fetch(`/api/projects/${id}/generate`, { method: "POST" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) setError(data.error || "Génération impossible");
-    await load();
+    setError(null);
+    setInfo(null);
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      setError("Écris d'abord une consigne de montage (ce que tu veux obtenir).");
+      return;
+    }
+    if (!project?.videos.length) {
+      setError("Importe au moins une vidéo avant de lancer l'analyse.");
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      await savePrompt();
+      const res = await fetch(`/api/projects/${id}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: trimmed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Génération impossible");
+        return;
+      }
+      setInfo(data.message || "Traitement lancé. Suis la progression ci-dessous.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Génération impossible");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function cancelJobs() {
@@ -228,9 +289,11 @@ export default function ProjectPage() {
   }
 
   const ready = project.status === "ready" || project.status === "completed";
-  const processing = ["pending", "importing", "analyzing", "transcribing", "generating", "exporting"].includes(
+  const processing = ["importing", "analyzing", "transcribing", "generating", "exporting"].includes(
     project.status,
   );
+  const hasActiveJobs = project.jobs.some((j) => j.status === "pending" || j.status === "running");
+  const busy = generating || processing || hasActiveJobs;
 
   return (
     <div className="space-y-8">
@@ -254,7 +317,7 @@ export default function ProjectPage() {
               </Link>
             </>
           )}
-          {processing && (
+          {busy && (
             <button type="button" className="btn btn-ghost" onClick={cancelJobs}>
               Annuler le traitement
             </button>
@@ -269,6 +332,27 @@ export default function ProjectPage() {
       )}
       {error && (
         <p className="whitespace-pre-wrap text-sm text-[var(--danger)]">{error}</p>
+      )}
+      {info && (
+        <p className="text-sm text-[var(--success)]">{info}</p>
+      )}
+      {aiStatus && (
+        <div
+          className={`rounded-xl border p-4 text-sm ${
+            aiStatus.smartAiEnabled
+              ? "border-[var(--success)]/40 bg-[rgba(110,180,130,0.08)]"
+              : "border-[var(--line)] bg-black/20"
+          }`}
+        >
+          <p className="font-medium">
+            {aiStatus.smartAiEnabled ? "IA réelle (OpenAI)" : "Mode démo (heuristiques)"}
+          </p>
+          <p className="mt-1 text-[var(--muted)]">{aiStatus.message}</p>
+          <p className="mt-2 text-xs text-[var(--muted)]">
+            Transcription : {aiStatus.transcriptionProvider} · Montage : {aiStatus.montageProvider}
+            {aiStatus.openaiKeyConfigured ? "" : " · clé OpenAI absente"}
+          </p>
+        </div>
       )}
 
       <section className="surface rounded-2xl p-6">
@@ -349,18 +433,23 @@ export default function ProjectPage() {
           placeholder="Décrivez le montage souhaité…"
         />
         <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" className="btn btn-ghost" onClick={savePrompt} disabled={savingPrompt}>
+          <button type="button" className="btn btn-ghost" onClick={() => void savePrompt()} disabled={savingPrompt || generating}>
             {savingPrompt ? "Sauvegarde…" : "Sauvegarder la consigne"}
           </button>
           <button
             type="button"
             className="btn btn-primary"
-            onClick={startGenerate}
-            disabled={project.videos.length === 0}
+            onClick={() => void startGenerate()}
+            disabled={project.videos.length === 0 || busy}
           >
-            Lancer analyse & génération
+            {busy ? "Traitement en cours…" : "Lancer analyse & génération"}
           </button>
         </div>
+        {!prompt.trim() && (
+          <p className="mt-2 text-xs text-[var(--muted)]">
+            Exemple : « Monte un reel dynamique de 30s avec les meilleurs moments et une accroche forte. »
+          </p>
+        )}
       </section>
 
       <section className="surface rounded-2xl p-6">

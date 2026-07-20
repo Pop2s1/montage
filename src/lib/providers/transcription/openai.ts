@@ -6,6 +6,8 @@ import type { TranscriptWord } from "@/types/domain";
 
 /**
  * Real Whisper via OpenAI Audio API when OPENAI_API_KEY is set.
+ * Prefers a mono WAV extract; if FFmpeg is unavailable (e.g. some Vercel
+ * runtimes), uploads the original media file directly.
  */
 export class OpenAITranscriptionProvider implements TranscriptionProvider {
   readonly name = "openai";
@@ -17,12 +19,24 @@ export class OpenAITranscriptionProvider implements TranscriptionProvider {
     language?: string;
     durationSec?: number;
   }): Promise<TranscriptionResult> {
-    // Extract mono wav for smaller upload when possible
-    const wavPath = await extractWav(input.filePath);
+    let uploadPath = input.filePath;
+    let uploadName = path.basename(input.filePath) || "video.mp4";
+    let uploadMime = guessMime(uploadName);
+    let tempWav: string | null = null;
+
+    try {
+      tempWav = await extractWav(input.filePath);
+      uploadPath = tempWav;
+      uploadName = "audio.wav";
+      uploadMime = "audio/wav";
+    } catch (err) {
+      console.warn("[transcription] wav extract failed, uploading source file", err);
+    }
+
     try {
       const form = new FormData();
-      const blob = new Blob([await fs.readFile(wavPath)], { type: "audio/wav" });
-      form.append("file", blob, "audio.wav");
+      const blob = new Blob([await fs.readFile(uploadPath)], { type: uploadMime });
+      form.append("file", blob, uploadName);
       form.append("model", "whisper-1");
       form.append("response_format", "verbose_json");
       form.append("timestamp_granularities[]", "word");
@@ -59,7 +73,7 @@ export class OpenAITranscriptionProvider implements TranscriptionProvider {
         provider: this.name,
       };
     } finally {
-      await fs.unlink(wavPath).catch(() => undefined);
+      if (tempWav) await fs.unlink(tempWav).catch(() => undefined);
     }
   }
 }
@@ -81,5 +95,15 @@ function runFfmpeg(args: string[]): Promise<void> {
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg failed (${code}): ${err.slice(-500)}`));
     });
+    p.on("error", (e) => reject(e));
   });
+}
+
+function guessMime(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  return "video/mp4";
 }

@@ -32,7 +32,16 @@ export async function processImportJob(jobId: string, projectId: string, payload
   await updateJobProgress(jobId, 10);
 
   const abs = await storage.resolveLocalPath(video.storageKey);
-  const probe = await probeVideo(abs);
+
+  let probe = { durationSec: 30, width: 1080, height: 1920, fps: 30 };
+  try {
+    probe = await probeVideo(abs);
+  } catch (err) {
+    console.warn("[import] probe failed, using fallback metadata", err);
+    // Rough duration estimate from file size (~1MB/s for phone video)
+    const estimated = Math.max(8, Math.min(getEnv().MAX_VIDEO_DURATION_SEC, (video.sizeBytes || 5_000_000) / 1_000_000));
+    probe = { durationSec: estimated, width: 1080, height: 1920, fps: 30 };
+  }
   await updateJobProgress(jobId, 40);
 
   if (probe.durationSec > getEnv().MAX_VIDEO_DURATION_SEC) {
@@ -41,11 +50,20 @@ export async function processImportJob(jobId: string, projectId: string, payload
 
   const thumbKey = path.join("thumbnails", projectId, `${video.id}.jpg`);
   const thumbAbs = storage.absolutePath(thumbKey);
-  await generateThumbnail(abs, thumbAbs, Math.min(1, probe.durationSec / 2));
+  try {
+    await generateThumbnail(abs, thumbAbs, Math.min(1, probe.durationSec / 2));
+  } catch (err) {
+    console.warn("[import] thumbnail skipped", err);
+  }
   await updateJobProgress(jobId, 70);
 
-  const { sha256File } = await import("@/lib/providers/storage/local");
-  const checksum = await sha256File(abs);
+  let checksum = video.checksum;
+  try {
+    const { sha256File } = await import("@/lib/providers/storage/local");
+    checksum = await sha256File(abs);
+  } catch {
+    // ignore
+  }
 
   await prisma.videoAsset.update({
     where: { id: video.id },
@@ -88,9 +106,25 @@ export async function processAnalyzeJob(
   await updateJobProgress(jobId, 5);
 
   const abs = await storage.resolveLocalPath(video.storageKey);
-  const silences = await detectSilences(abs);
+  let silences: SilenceRange[] = [];
+  let scenes: number[] = [0];
+  try {
+    silences = await detectSilences(abs);
+  } catch (err) {
+    console.warn("[analyze] silence detection skipped", err);
+  }
   await updateJobProgress(jobId, 45);
-  const scenes = await detectSceneCuts(abs);
+  try {
+    scenes = await detectSceneCuts(abs);
+  } catch (err) {
+    console.warn("[analyze] scene detection skipped", err);
+    const duration = video.durationSec ?? 30;
+    scenes = [0, duration * 0.33, duration * 0.66, duration];
+  }
+  if (scenes.length < 2) {
+    const duration = video.durationSec ?? 30;
+    scenes = [0, duration * 0.5, duration];
+  }
   await updateJobProgress(jobId, 80);
 
   const duration = video.durationSec ?? 0;
@@ -205,7 +239,7 @@ export async function processTranscribeJob(
       where: {
         projectId,
         type: "generate",
-        status: { in: ["pending", "running", "completed"] },
+        status: { in: ["pending", "running"] },
       },
     });
     if (!existing) {
@@ -224,6 +258,20 @@ export async function processGenerateJob(jobId: string, projectId: string) {
       settings: true,
     },
   });
+
+  if (project.videos.length === 0) {
+    throw new Error("Aucune vidéo dans le projet");
+  }
+
+  const pipelineReady =
+    project.videos.every((v) => v.status === "ready" && (v.durationSec ?? 0) > 0) &&
+    project.videos.every((v) => project.transcripts.some((t) => t.videoId === v.id)) &&
+    project.videos.every((v) => project.analyses.some((a) => a.videoId === v.id));
+
+  if (!pipelineReady) {
+    // Prefer waiting behind upstream jobs (claimNextJob prioritizes import/analyze/transcribe).
+    throw new Error("Analyse/transcription encore en cours — réessai automatique");
+  }
 
   await prisma.project.update({ where: { id: projectId }, data: { status: "generating" } });
   await updateJobProgress(jobId, 10);
