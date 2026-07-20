@@ -11,7 +11,9 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/register") ||
     pathname.startsWith("/api/health") ||
-    pathname.startsWith("/api/downloads");
+    pathname.startsWith("/api/downloads") ||
+    // Vercel Blob calls back without cookies on upload completion
+    pathname.includes("/upload/token");
 
   if (isPublic || pathname.startsWith("/_next") || pathname.includes(".")) {
     return NextResponse.next();

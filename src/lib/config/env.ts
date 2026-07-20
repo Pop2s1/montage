@@ -1,9 +1,13 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
+  DATABASE_URL: z.string().min(1).optional(),
+  POSTGRES_PRISMA_URL: z.string().optional(),
+  POSTGRES_URL: z.string().optional(),
+  POSTGRES_URL_NON_POOLING: z.string().optional(),
+  DATABASE_URL_UNPOOLED: z.string().optional(),
   AUTH_SECRET: z.string().min(16),
-  APP_URL: z.string().url().default("http://localhost:3000"),
+  APP_URL: z.string().default("http://localhost:3000"),
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   STORAGE_LOCAL_ROOT: z.string().default("./storage"),
   TRANSCRIPTION_PROVIDER: z.enum(["demo", "openai"]).default("demo"),
@@ -20,9 +24,10 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_ENDPOINT: z.string().optional(),
+  BLOB_READ_WRITE_TOKEN: z.string().optional(),
 });
 
-export type AppEnv = z.infer<typeof envSchema>;
+export type AppEnv = z.infer<typeof envSchema> & { DATABASE_URL: string };
 
 let cached: AppEnv | null = null;
 
@@ -33,7 +38,22 @@ export function getEnv(): AppEnv {
     const msg = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
     throw new Error(`Invalid environment: ${msg}`);
   }
-  cached = parsed.data;
+
+  const databaseUrl =
+    parsed.data.DATABASE_URL ||
+    parsed.data.POSTGRES_PRISMA_URL ||
+    parsed.data.POSTGRES_URL ||
+    parsed.data.POSTGRES_URL_NON_POOLING ||
+    parsed.data.DATABASE_URL_UNPOOLED;
+
+  if (!databaseUrl) {
+    throw new Error(
+      "Invalid environment: DATABASE_URL (or POSTGRES_PRISMA_URL / POSTGRES_URL) is required",
+    );
+  }
+
+  process.env.DATABASE_URL = databaseUrl;
+  cached = { ...parsed.data, DATABASE_URL: databaseUrl };
   return cached;
 }
 

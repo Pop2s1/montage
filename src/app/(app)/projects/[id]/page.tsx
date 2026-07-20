@@ -61,20 +61,117 @@ export default function ProjectPage() {
     };
   }, [load]);
 
-  async function onUpload(files: FileList | null) {
+  async function onPickFiles(files: FileList | null) {
     if (!files?.length) return;
-    setUploading(true);
     setError(null);
-    const fd = new FormData();
-    Array.from(files).forEach((f) => fd.append("files", f));
-    const res = await fetch(`/api/projects/${id}/upload`, { method: "POST", body: fd });
-    const data = await res.json().catch(() => ({}));
-    setUploading(false);
-    if (!res.ok) {
-      setError(data.error || "Upload échoué");
+    setPendingFiles(Array.from(files));
+  }
+
+  async function onImport() {
+    if (!pendingFiles.length) {
+      setError("Choisis d'abord une ou plusieurs vidéos.");
       return;
     }
-    await load();
+    setUploading(true);
+    setError(null);
+    let imported = 0;
+    const failures: string[] = [];
+
+    try {
+      for (let i = 0; i < pendingFiles.length; i++) {
+        const file = pendingFiles[i]!;
+        setUploadProgress(`Import ${i + 1}/${pendingFiles.length} — ${file.name}`);
+        try {
+          const useBlob = file.size > 4 * 1024 * 1024;
+          if (useBlob) {
+            await uploadViaBlob(file);
+          } else {
+            await uploadDirect(file);
+          }
+          imported += 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Upload échoué";
+          failures.push(`${file.name}: ${message}`);
+        }
+      }
+
+      await load();
+      // Force a second refresh shortly after (Blob callback may land slightly later)
+      setTimeout(() => {
+        void load();
+      }, 1500);
+
+      if (imported > 0) {
+        setPendingFiles([]);
+        setUploadProgress(`${imported} vidéo(s) importée(s). Traitement en cours…`);
+      } else {
+        setUploadProgress(null);
+      }
+
+      if (failures.length) {
+        setError(failures.join("\n"));
+      } else if (imported === 0) {
+        setError("Aucune vidéo importée. Réessaie ou vérifie Vercel Blob.");
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function uploadDirect(file: File) {
+    const fd = new FormData();
+    fd.append("files", file);
+    const res = await fetch(`/api/projects/${id}/upload`, { method: "POST", body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Upload échoué (${res.status})`);
+    }
+    if (!data.videos?.length) {
+      throw new Error("Le serveur n'a renvoyé aucune vidéo.");
+    }
+  }
+
+  async function uploadViaBlob(file: File) {
+    const { upload } = await import("@vercel/blob/client");
+    let blob;
+    try {
+      blob = await upload(file.name || `video-${Date.now()}.mp4`, file, {
+        access: "public",
+        handleUploadUrl: `/api/projects/${id}/upload/token`,
+        multipart: true,
+        contentType: file.type || "video/mp4",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Blob upload failed";
+      if (
+        message.includes("BLOB_MISSING") ||
+        message.includes("Blob non configuré") ||
+        message.includes("No token") ||
+        message.toLowerCase().includes("blob")
+      ) {
+        throw new Error(
+          `« ${file.name} » (${(file.size / (1024 * 1024)).toFixed(1)} Mo) nécessite Vercel Blob. Va dans Vercel → Storage → Create → Blob, connecte le projet, redeploy, puis réessaie. Ou utilise une vidéo < 4 Mo.`,
+        );
+      }
+      throw new Error(message);
+    }
+
+    const res = await fetch(`/api/projects/${id}/upload/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: blob.url,
+        pathname: blob.pathname,
+        originalName: file.name || "video.mp4",
+        sizeBytes: file.size,
+        mimeType: file.type || "video/mp4",
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Blob file is online; completion route failed — still ask UI to reload
+      throw new Error(data.error || "Vidéo uploadée mais non enregistrée dans le projet");
+    }
   }
 
   async function savePrompt() {
@@ -145,21 +242,60 @@ export default function ProjectPage() {
           {project.errorMessage}
         </div>
       )}
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+      {error && (
+        <p className="whitespace-pre-wrap text-sm text-[var(--danger)]">{error}</p>
+      )}
 
       <section className="surface rounded-2xl p-6">
         <h2 className="font-display mb-3 text-lg font-semibold">1. Import des vidéos</h2>
-        <label className="btn btn-ghost cursor-pointer">
-          {uploading ? "Import…" : "Choisir des fichiers"}
-          <input
-            type="file"
-            accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
-            multiple
-            className="hidden"
-            disabled={uploading}
-            onChange={(e) => onUpload(e.target.files)}
-          />
-        </label>
+        <p className="mb-4 text-sm text-[var(--muted)]">
+          Depuis un téléphone : choisis tes vidéos, puis appuie sur <strong>Importer</strong>.
+          Les fichiers &gt; 4&nbsp;Mo nécessitent Vercel Blob (Storage).
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          <label className="btn btn-ghost cursor-pointer">
+            Choisir des vidéos
+            <input
+              type="file"
+              accept="video/*,.mp4,.mov,.m4v,.webm,.3gp"
+              multiple
+              className="hidden"
+              disabled={uploading}
+              onChange={(e) => {
+                void onPickFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={uploading || pendingFiles.length === 0}
+            onClick={() => void onImport()}
+          >
+            {uploading ? "Import en cours…" : "Importer"}
+          </button>
+        </div>
+
+        {pendingFiles.length > 0 && (
+          <ul className="mt-4 space-y-2 rounded-xl border border-[var(--line)] bg-black/20 p-3">
+            {pendingFiles.map((f) => (
+              <li key={`${f.name}-${f.size}`} className="flex justify-between gap-3 text-sm">
+                <span className="truncate">{f.name}</span>
+                <span className="shrink-0 text-[var(--muted)]">
+                  {(f.size / (1024 * 1024)).toFixed(1)} Mo
+                  {f.size > 4 * 1024 * 1024 ? " · Blob" : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {uploadProgress && (
+          <p className="mt-3 text-sm text-[var(--accent-strong)]">{uploadProgress}</p>
+        )}
+
         <ul className="mt-4 space-y-2">
           {project.videos.map((v) => (
             <li key={v.id} className="flex justify-between gap-3 text-sm">
@@ -173,7 +309,7 @@ export default function ProjectPage() {
               <span className="badge">{statusLabel(v.status)}</span>
             </li>
           ))}
-          {project.videos.length === 0 && (
+          {project.videos.length === 0 && pendingFiles.length === 0 && (
             <li className="text-sm text-[var(--muted)]">Aucune vidéo importée.</li>
           )}
         </ul>
