@@ -40,11 +40,19 @@ export async function GET(_req: Request, ctx: Ctx) {
       },
     });
 
+    if (!project) {
+      return NextResponse.json({ error: "Projet introuvable" }, { status: 404 });
+    }
+
     return NextResponse.json(
-      { project },
+      {
+        project,
+        videoCount: project.videos.length,
+      },
       {
         headers: {
           "Cache-Control": "no-store, no-cache, must-revalidate",
+          Pragma: "no-cache",
         },
       },
     );
