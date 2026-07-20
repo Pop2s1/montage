@@ -31,7 +31,7 @@ export async function processImportJob(jobId: string, projectId: string, payload
   });
   await updateJobProgress(jobId, 10);
 
-  const abs = storage.absolutePath(video.storageKey);
+  const abs = await storage.resolveLocalPath(video.storageKey);
   const probe = await probeVideo(abs);
   await updateJobProgress(jobId, 40);
 
@@ -87,7 +87,7 @@ export async function processAnalyzeJob(
   await prisma.project.update({ where: { id: projectId }, data: { status: "analyzing" } });
   await updateJobProgress(jobId, 5);
 
-  const abs = storage.absolutePath(video.storageKey);
+  const abs = await storage.resolveLocalPath(video.storageKey);
   const silences = await detectSilences(abs);
   await updateJobProgress(jobId, 45);
   const scenes = await detectSceneCuts(abs);
@@ -161,7 +161,7 @@ export async function processTranscribeJob(
   await updateJobProgress(jobId, 10);
 
   const provider = getTranscriptionProvider();
-  const abs = storage.absolutePath(video.storageKey);
+  const abs = await storage.resolveLocalPath(video.storageKey);
   const result = await provider.transcribe({
     filePath: abs,
     language: "fr",
@@ -441,17 +441,16 @@ export async function processExportJob(
   const videos = await prisma.videoAsset.findMany({ where: { projectId } });
   const videoMap = new Map(videos.map((v) => [v.id, v]));
 
-  const cuts = timeline.segments
-    .filter((s) => s.videoId)
-    .map((s) => {
-      const v = videoMap.get(s.videoId!);
-      if (!v) throw new Error("Vidéo source manquante");
-      return {
-        inputPath: storage.absolutePath(v.storageKey),
-        startSec: s.sourceStartSec,
-        endSec: s.sourceEndSec,
-      };
+  const cuts = [];
+  for (const s of timeline.segments.filter((seg) => seg.videoId)) {
+    const v = videoMap.get(s.videoId!);
+    if (!v) throw new Error("Vidéo source manquante");
+    cuts.push({
+      inputPath: await storage.resolveLocalPath(v.storageKey),
+      startSec: s.sourceStartSec,
+      endSec: s.sourceEndSec,
     });
+  }
 
   let subtitleAssPath: string | undefined;
   if (exportJob.burnSubtitles && timeline.subtitles.length) {

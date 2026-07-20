@@ -19,8 +19,14 @@ export async function GET(_req: Request, ctx: Ctx) {
     });
     if (!video) return NextResponse.json({ error: "Vidéo introuvable" }, { status: 404 });
 
+    // Remote Blob: redirect to the signed/public blob URL
+    if (video.storageKey.startsWith("blob:")) {
+      const url = video.storageKey.slice("blob:".length);
+      return NextResponse.redirect(url, 302);
+    }
+
     const storage = getStorage();
-    const abs = storage.absolutePath(video.storageKey);
+    const abs = await storage.resolveLocalPath(video.storageKey);
     const stream = createReadStream(abs);
     const webStream = Readable.toWeb(stream) as ReadableStream;
 

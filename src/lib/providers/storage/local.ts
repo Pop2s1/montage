@@ -81,7 +81,41 @@ export class LocalStorageProvider implements StorageProvider {
   }
 
   absolutePath(key: string): string {
+    if (key.startsWith("blob:")) {
+      throw new Error("Blob storage keys must be materialized with resolveLocalPath()");
+    }
     return this.resolve(key);
+  }
+
+  /**
+   * Ensure a readable local filesystem path (download remote blob URLs to /tmp when needed).
+   */
+  async resolveLocalPath(key: string): Promise<string> {
+    if (!key.startsWith("blob:")) {
+      return this.absolutePath(key);
+    }
+
+    const url = key.slice("blob:".length);
+    await this.ensureReady();
+    const ext = path.extname(new URL(url).pathname) || ".mp4";
+    const localKey = path.join("temp", `blob-${createHash("sha256").update(url).digest("hex").slice(0, 16)}${ext}`);
+    const localPath = this.resolve(localKey);
+
+    try {
+      await fs.access(localPath);
+      return localPath;
+    } catch {
+      // download
+    }
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Impossible de télécharger la vidéo Blob (${res.status})`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, buf);
+    return localPath;
   }
 }
 
