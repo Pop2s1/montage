@@ -21,15 +21,20 @@ export async function enqueueAndProcess(input: {
   return job;
 }
 
-async function drainQueue(maxJobs: number) {
+/** Kick the queue without enqueueing (used by cron / manual trigger).
+ * Returns how many jobs were processed.
+ */
+export async function kickQueue(maxJobs = 5): Promise<number> {
+  return drainQueue(maxJobs);
+}
+
+async function drainQueue(maxJobs: number): Promise<number> {
   const { runOneJob } = await import("@/workers/processor");
+  let n = 0;
   for (let i = 0; i < maxJobs; i++) {
     const did = await runOneJob();
     if (!did) break;
+    n += 1;
   }
-}
-
-/** Kick the queue without enqueueing (used by cron / manual trigger). */
-export async function kickQueue(maxJobs = 5) {
-  await drainQueue(maxJobs);
+  return n;
 }

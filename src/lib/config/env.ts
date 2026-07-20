@@ -10,9 +10,11 @@ const envSchema = z.object({
   APP_URL: z.string().default("http://localhost:3000"),
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   STORAGE_LOCAL_ROOT: z.string().default("./storage"),
-  TRANSCRIPTION_PROVIDER: z.enum(["demo", "openai"]).default("demo"),
-  MONTAGE_PROVIDER: z.enum(["demo", "openai"]).default("demo"),
+  // auto = use OpenAI when OPENAI_API_KEY is set, else demo heuristics
+  TRANSCRIPTION_PROVIDER: z.enum(["demo", "openai", "auto"]).default("auto"),
+  MONTAGE_PROVIDER: z.enum(["demo", "openai", "auto"]).default("auto"),
   OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MONTAGE_MODEL: z.string().default("gpt-4o-mini"),
   MAX_UPLOAD_BYTES: z.coerce.number().default(524_288_000),
   MAX_VIDEO_DURATION_SEC: z.coerce.number().default(1800),
   ALLOWED_VIDEO_MIME: z.string().default("video/mp4,video/webm,video/quicktime"),
