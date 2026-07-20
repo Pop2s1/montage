@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { requireUser, requireProject } from "@/lib/auth/guards";
-import { enqueueJob } from "@/lib/queue/jobs";
+import { enqueueAndProcess } from "@/lib/queue/inline";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -28,7 +28,7 @@ export async function POST(_req: Request, ctx: Ctx) {
       data: { status: "cancelled", finishedAt: new Date() },
     });
 
-    const job = await enqueueJob({ projectId: id, type: "generate", payload: {} });
+    const job = await enqueueAndProcess({ projectId: id, type: "generate", payload: {} });
     await prisma.project.update({ where: { id }, data: { status: "generating", errorMessage: null } });
 
     return NextResponse.json({ job }, { status: 202 });

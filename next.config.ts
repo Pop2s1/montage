@@ -6,8 +6,10 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "512mb",
     },
   },
-  // Allow large uploads in route handlers during local/dev usage
-  serverExternalPackages: ["@prisma/client", "bcryptjs"],
+  serverExternalPackages: ["@prisma/client", "bcryptjs", "ffmpeg-static"],
+  outputFileTracingIncludes: {
+    "/api/**/*": ["./node_modules/ffmpeg-static/**/*"],
+  },
 };
 
 export default nextConfig;

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { requireUser, requireProject, rateLimit } from "@/lib/auth/guards";
 import { FORMAT_SPECS, type ProjectFormat } from "@/types/domain";
-import { enqueueJob } from "@/lib/queue/jobs";
+import { enqueueAndProcess } from "@/lib/queue/inline";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -85,7 +85,7 @@ export async function POST(req: Request, ctx: Ctx) {
       },
     });
 
-    await enqueueJob({
+    await enqueueAndProcess({
       projectId: id,
       type: "export",
       payload: { exportId: exportJob.id },

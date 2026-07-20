@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { requireUser, requireProject, rateLimit } from "@/lib/auth/guards";
 import { getStorage } from "@/lib/providers/storage/local";
 import { allowedMimeTypes, getEnv } from "@/lib/config/env";
-import { enqueueJob } from "@/lib/queue/jobs";
+import { enqueueAndProcess } from "@/lib/queue/inline";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -67,7 +67,7 @@ export async function POST(req: Request, ctx: Ctx) {
         },
       });
 
-      await enqueueJob({
+      await enqueueAndProcess({
         projectId,
         type: "import",
         payload: { videoId: video.id },

@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 import type { SilenceRange } from "@/types/domain";
+import { getFfmpegPath, getFfprobePath } from "@/lib/video/binaries";
 
 export interface ProbeResult {
   durationSec: number;
@@ -38,16 +39,29 @@ export function runCommand(
 }
 
 export async function probeVideo(filePath: string): Promise<ProbeResult> {
-  const { stdout } = await runCommand("ffprobe", [
-    "-v",
-    "quiet",
-    "-print_format",
-    "json",
-    "-show_format",
-    "-show_streams",
-    filePath,
-  ]);
+  try {
+    const { stdout } = await runCommand(getFfprobePath(), [
+      "-v",
+      "quiet",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      filePath,
+    ]);
+    return parseProbeJson(stdout);
+  } catch {
+    try {
+      await runCommand(getFfmpegPath(), ["-i", filePath]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return parseFfmpegProbe(message);
+    }
+    return { durationSec: 0, width: 1280, height: 720, fps: 30 };
+  }
+}
 
+function parseProbeJson(stdout: string): ProbeResult {
   const data = JSON.parse(stdout) as {
     format?: { duration?: string };
     streams?: Array<{
@@ -58,17 +72,34 @@ export async function probeVideo(filePath: string): Promise<ProbeResult> {
       codec_name?: string;
     }>;
   };
-
   const video = data.streams?.find((s) => s.codec_type === "video");
   const durationSec = parseFloat(data.format?.duration ?? "0") || 0;
   const fps = parseFps(video?.avg_frame_rate ?? "30/1");
-
   return {
     durationSec,
     width: video?.width ?? 0,
     height: video?.height ?? 0,
     fps,
     codec: video?.codec_name,
+  };
+}
+
+function parseFfmpegProbe(log: string): ProbeResult {
+  const durMatch = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(log);
+  let durationSec = 0;
+  if (durMatch) {
+    durationSec =
+      parseInt(durMatch[1], 10) * 3600 +
+      parseInt(durMatch[2], 10) * 60 +
+      parseFloat(durMatch[3]);
+  }
+  const sizeMatch = /(\d{2,5})x(\d{2,5})/.exec(log);
+  const fpsMatch = /(\d+(?:\.\d+)?)\s*fps/.exec(log);
+  return {
+    durationSec,
+    width: sizeMatch ? parseInt(sizeMatch[1], 10) : 1280,
+    height: sizeMatch ? parseInt(sizeMatch[2], 10) : 720,
+    fps: fpsMatch ? parseFloat(fpsMatch[1]) : 30,
   };
 }
 
@@ -85,7 +116,7 @@ export async function generateThumbnail(
   atSec = 1,
 ): Promise<void> {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
-  await runCommand("ffmpeg", [
+  await runCommand(getFfmpegPath(), [
     "-y",
     "-ss",
     String(Math.max(0, atSec)),
@@ -108,7 +139,7 @@ export async function detectSilences(
   minDuration = 0.4,
 ): Promise<SilenceRange[]> {
   try {
-    const { stderr } = await runCommand("ffmpeg", [
+    const { stderr } = await runCommand(getFfmpegPath(), [
       "-i",
       videoPath,
       "-af",
@@ -151,7 +182,7 @@ export function parseSilenceLog(log: string): SilenceRange[] {
  */
 export async function detectSceneCuts(videoPath: string, threshold = 0.35): Promise<number[]> {
   try {
-    const { stderr } = await runCommand("ffmpeg", [
+    const { stderr } = await runCommand(getFfmpegPath(), [
       "-i",
       videoPath,
       "-filter:v",
@@ -201,6 +232,7 @@ export async function exportTimeline(options: {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   const workDir = path.join(path.dirname(outputPath), `work-${Date.now()}`);
   await fs.mkdir(workDir, { recursive: true });
+  const ffmpegBin = getFfmpegPath();
 
   try {
     const parts: string[] = [];
@@ -208,7 +240,7 @@ export async function exportTimeline(options: {
       const cut = cuts[i]!;
       const part = path.join(workDir, `part-${i.toString().padStart(3, "0")}.mp4`);
       const dur = Math.max(0.1, cut.endSec - cut.startSec);
-      await runCommand("ffmpeg", [
+      await runCommand(ffmpegBin, [
         "-y",
         "-ss",
         String(cut.startSec),
@@ -243,7 +275,7 @@ export async function exportTimeline(options: {
     );
 
     const concatPath = path.join(workDir, "concat.mp4");
-    await runCommand("ffmpeg", [
+    await runCommand(getFfmpegPath(), [
       "-y",
       "-f",
       "concat",
@@ -259,7 +291,7 @@ export async function exportTimeline(options: {
     if (subtitleAssPath) {
       // Escape path for ffmpeg subtitles filter (Windows/Unix)
       const escaped = subtitleAssPath.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
-      await runCommand("ffmpeg", [
+      await runCommand(getFfmpegPath(), [
         "-y",
         "-i",
         concatPath,

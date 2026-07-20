@@ -16,14 +16,18 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "worker": "tsx src/workers/index.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "deploy:vercel": "vercel deploy --prod",
+    "vercel": "vercel"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "@vercel/functions": "^3.7.5",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "dotenv": "^17.4.2",
+    "ffmpeg-static": "^5.3.0",
     "nanoid": "^6.0.0",
     "next": "15.5.20",
     "next-auth": "5.0.0-beta.25",
@@ -47,6 +51,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.1",
     "typescript": "^5",
+    "vercel": "^56.3.2",
     "vitest": "^4.1.10"
   },
   "pnpm": {
@@ -56,7 +61,9 @@
       "@prisma/engines",
       "esbuild",
       "sharp",
-      "unrs-resolver"
+      "unrs-resolver",
+      "ffmpeg-static",
+      "@ffmpeg-installer/ffmpeg"
     ]
   },
   "prisma": {

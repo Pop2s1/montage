@@ -27,13 +27,15 @@ UI → API Routes → Prisma
 
 - Node.js 20+
 - pnpm 9+
-- FFmpeg + FFprobe (`ffmpeg` dans le PATH)
+- FFmpeg + FFprobe (`ffmpeg` dans le PATH) — ou `ffmpeg-static` (inclus)
+- **PostgreSQL** (local ou managé : Neon / Vercel Postgres)
 
 ## Installation locale
 
 ```bash
 pnpm install
 cp .env.example .env
+# Démarrer Postgres puis :
 pnpm db:migrate
 pnpm db:seed
 ```
@@ -42,6 +44,19 @@ Compte démo créé par le seed :
 
 - email : `demo@montage.app`
 - mot de passe : `demo12345`
+
+## Déploiement Vercel
+
+1. Compte Vercel + projet lié au repo
+2. Créer une base **Postgres** (Storage → Neon / Postgres) et copier `DATABASE_URL`
+3. Variables d’environnement requises :
+   - `DATABASE_URL`
+   - `AUTH_SECRET` (long secret aléatoire)
+   - `AUTH_TRUST_HOST=true`
+   - `CRON_SECRET` (optionnel, pour `/api/cron/worker`)
+4. Deploy : `pnpm exec vercel --prod`
+
+Limites Vercel : le traitement vidéo tourne en serverless (`waitUntil` + cron minute). Les exports longs peuvent nécessiter un worker dédié (Railway/Fly) pour la prod intensive.
 
 ## Lancement
 

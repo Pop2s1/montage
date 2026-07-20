@@ -12,8 +12,8 @@ Application web de montage vidéo assisté par IA : l’utilisateur importe des 
 | UI | **Tailwind CSS 4** + composants locaux | Rapide, cohérent, sans dépendance design-system lourde |
 | État éditeur | **Zustand** | Léger, adapté à une timeline interactive (undo/redo) |
 | Auth | **Auth.js (NextAuth v5)** credentials + sessions JWT | Sécurisé, sans vendor lock-in pour le MVP |
-| Données | **Prisma + SQLite** (dev/MVP) | Zéro infra locale ; schéma prêt pour PostgreSQL en prod |
-| Files d’attente | **Table `ProcessingJob` + worker polling** | Asynchrone sans Redis obligatoire ; interface prête pour BullMQ |
+| Données | **Prisma + PostgreSQL** | Prod-ready (Neon / Vercel Postgres) ; local via Postgres |
+| Files d’attente | **Table `ProcessingJob` + worker / `waitUntil`** | Worker local ; sur Vercel : `waitUntil` + cron |
 | Vidéo | **FFmpeg / FFprobe** | Standard industrie pour probe, coupe, scènes, export |
 | Transcription | **Interface `TranscriptionProvider`** + `DemoTranscriptionProvider` | Remplaçable par Whisper/OpenAI dès qu’une clé est dispo |
 | Génération montage | **Interface `MontageProvider`** + `DemoMontageProvider` | Heuristiques + LLM optionnel |

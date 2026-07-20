@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -28,7 +28,7 @@ model AccountLimit {
   userId                  String @unique
   user                    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   maxImportMinutesPerMonth Int   @default(120)
-  maxStorageBytes         Int    @default(2147483648) // 2GB
+  maxStorageBytes         Int    @default(2147483647) // ~2GB
   maxExportsPerMonth      Int    @default(20)
   maxProjects             Int    @default(10)
 

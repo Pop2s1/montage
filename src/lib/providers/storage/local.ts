@@ -3,12 +3,20 @@ import { promises as fs } from "fs";
 import path from "path";
 import { getEnv } from "@/lib/config/env";
 import type { StorageProvider } from "./types";
+import { isVercelRuntime } from "@/lib/video/binaries";
 
 export class LocalStorageProvider implements StorageProvider {
   private root: string;
 
   constructor(root?: string) {
-    this.root = path.resolve(root ?? getEnv().STORAGE_LOCAL_ROOT);
+    if (root) {
+      this.root = path.resolve(root);
+    } else if (isVercelRuntime()) {
+      // Ephemeral but writable on Vercel; prefer Blob/S3 in production scale-out
+      this.root = path.join("/tmp", "montage-storage");
+    } else {
+      this.root = path.resolve(getEnv().STORAGE_LOCAL_ROOT);
+    }
   }
 
   async ensureReady(): Promise<void> {
